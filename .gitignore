@@ -10,3 +10,15 @@
 *.o
 *.obj
 *.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+ENV/
