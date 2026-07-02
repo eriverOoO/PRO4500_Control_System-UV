@@ -1,0 +1,12 @@
+*.png
+*.jpeg
+*.jpg
+*.gif  
+*.ico
+*.dll
+*.exe
+*.so
+*.dylib
+*.o
+*.obj
+*.txt
