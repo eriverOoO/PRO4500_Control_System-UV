@@ -72,6 +72,42 @@ If `dll_path` is empty, the controller tries common XIMEA install locations and
 then the system `PATH`. You can also set the `XIMEA_XIAPI_DLL` environment
 variable to the DLL path.
 
+## Synchronization
+
+The recommended default is software-level synchronization from the master PC:
+
+1. The PC displays one pattern on the projector screen.
+2. The PC waits `settle_ms`.
+3. The PC sends XIMEA `trigger_software` through xiAPI.
+4. The PC waits for `xiGetImage`, saves the frame, logs metadata, then advances
+   to the next pattern.
+
+Use this with:
+
+```json
+"trigger_mode": "software"
+```
+
+If you wire a hardware trigger cable from the master setup/projector trigger
+source to the XIMEA camera input, use:
+
+```json
+"trigger_mode": "edge_rising"
+```
+
+or:
+
+```json
+"trigger_mode": "edge_falling"
+```
+
+In hardware-trigger mode the controller does not emit `trigger_software`; it
+starts acquisition and waits for `xiGetImage` to return the frame after the
+external edge arrives. Keep `timeout_ms` long enough for the trigger interval.
+
+Use `trigger_mode: "off"` or `"freerun"` only for preview or non-synchronized
+testing.
+
 ## Mock Camera
 
 The default config uses:
