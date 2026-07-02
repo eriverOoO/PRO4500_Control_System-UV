@@ -542,6 +542,7 @@ class XimeaUvCamera(CameraInterface):
             ]:
                 candidates.extend(
                     [
+                        root / "API" / "xiAPI" / "xiapi64.dll",
                         root / "XIMEA" / "API" / "x64" / "xiapi64.dll",
                         root / "XIMEA" / "API" / "x86" / "xiapi32.dll",
                         root / "API" / "x64" / "xiapi64.dll",

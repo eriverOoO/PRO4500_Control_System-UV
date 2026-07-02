@@ -3,7 +3,7 @@
     "provider": "mock",
     "ximea": {
       "device_index": 0,
-      "dll_path": "",
+      "dll_path": "C:/XIMEA/API/xiAPI/xiapi64.dll",
       "exposure_us": 10000,
       "gain_db": 0.0,
       "fps": 15.0,
