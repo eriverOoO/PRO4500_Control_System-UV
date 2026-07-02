@@ -542,7 +542,7 @@ void build_ui(HWND hwnd) {
 
     y += 38;
     make_label(hwnd, L"Provider", margin, y + 4, 70, 22);
-    g_app.provider = make_edit(hwnd, IDC_PROVIDER, L"mock", 85, y, 90, 24);
+    g_app.provider = make_edit(hwnd, IDC_PROVIDER, L"ximea", 85, y, 90, 24);
     make_label(hwnd, L"Device", 198, y + 4, 55, 22);
     g_app.deviceIndex = make_edit(hwnd, IDC_DEVICE_INDEX, L"0", 252, y, 50, 24);
     make_label(hwnd, L"Exposure us", 325, y + 4, 85, 22);

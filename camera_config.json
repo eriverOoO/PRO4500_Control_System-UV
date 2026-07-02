@@ -1,6 +1,6 @@
 {
   "camera": {
-    "provider": "mock",
+    "provider": "ximea",
     "ximea": {
       "device_index": 0,
       "dll_path": "C:/XIMEA/API/xiAPI/xiapi64.dll",
