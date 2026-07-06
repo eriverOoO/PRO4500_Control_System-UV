@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,106 @@ from camera_provider import CameraError, CameraFrame, CameraInterface, CameraPro
 
 
 IMAGE_SUFFIXES = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+FINAL_DECODE_SUFFIX = ".png"
+
+PATTERN_CONTRACT: tuple[tuple[int, str], ...] = (
+    (0, "White"),
+    (1, "Black"),
+    (2, "Gray0"),
+    (3, "Gray1"),
+    (4, "Gray2"),
+    (5, "Gray3"),
+    (6, "Gray4"),
+    (7, "Gray5"),
+    (8, "Gray6"),
+    (9, "Gray7"),
+    (10, "Sine_000"),
+    (11, "Sine_090"),
+    (12, "Sine_180"),
+    (13, "Sine_270"),
+    (14, "Gray0_inv"),
+    (15, "Gray1_inv"),
+    (16, "Gray2_inv"),
+    (17, "Gray3_inv"),
+    (18, "Gray4_inv"),
+    (19, "Gray5_inv"),
+    (20, "Gray6_inv"),
+    (21, "Gray7_inv"),
+)
+PATTERN_LABELS = dict(PATTERN_CONTRACT)
+LEGACY_PATTERN_IDS = tuple(range(14))
+FULL_PATTERN_IDS = tuple(pattern_id for pattern_id, _label in PATTERN_CONTRACT)
+DEFAULT_CAPTURE_ORDER = (
+    0,
+    1,
+    2,
+    14,
+    3,
+    15,
+    4,
+    16,
+    5,
+    17,
+    6,
+    18,
+    7,
+    19,
+    8,
+    20,
+    9,
+    21,
+    10,
+    11,
+    12,
+    13,
+)
+
+
+@dataclass(frozen=True)
+class PatternSpec:
+    pattern_id: int
+    label: str
+    source_path: Path
+    invert_source: bool = False
+
+
+@dataclass(frozen=True)
+class ExposureBracket:
+    name: str
+    exposure_us: int
+    gain_db: float = 0.0
+
+    @property
+    def exposure_gain_scale(self) -> float:
+        gain_linear = math.pow(10.0, float(self.gain_db) / 20.0)
+        return max(1.0, float(self.exposure_us) * gain_linear)
+
+
+@dataclass(frozen=True)
+class HdrConfig:
+    enabled: bool
+    output_bit_depth: int
+    saturated_threshold: int
+    dark_threshold: int
+    brackets: tuple[ExposureBracket, ...]
+
+
+@dataclass(frozen=True)
+class RigMetadata:
+    scan_type: str
+    projector_tilt_deg: float
+    focus_confirmed: bool
+    scheimpflug_confirmed: bool
+    rig_id: str
+    calibration_id: str
+    projector_brightness: str
+    keystone_predistortion: bool
+
+
+@dataclass(frozen=True)
+class CaptureConfig:
+    hdr: HdrConfig
+    rig: RigMetadata
 
 
 def now_ms() -> int:
@@ -52,16 +153,29 @@ def safe_scan_id(value: str) -> str:
     return value
 
 
+def safe_filename_token(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return token or "bracket"
+
+
+def pattern_id_from_filename(path: Path) -> int | None:
+    for pattern in (r"^pattern[_-](\d{1,3})\b", r"^(\d{1,3})(?:\D|$)"):
+        match = re.match(pattern, path.stem, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def pattern_sort_key(path: Path) -> tuple[int, str]:
-    match = re.match(r"^(\d+)", path.name)
-    index = int(match.group(1)) if match else 1_000_000
+    pattern_id = pattern_id_from_filename(path)
+    index = pattern_id if pattern_id is not None else 1_000_000
     return index, path.name.lower()
 
 
-def load_patterns(pattern_dir: Path) -> list[Path]:
+def image_files(pattern_dir: Path) -> list[Path]:
     if not pattern_dir.exists():
         raise SystemExit(f"Pattern directory does not exist: {pattern_dir}")
-    patterns = sorted(
+    files = sorted(
         [
             path
             for path in pattern_dir.iterdir()
@@ -69,9 +183,57 @@ def load_patterns(pattern_dir: Path) -> list[Path]:
         ],
         key=pattern_sort_key,
     )
-    if not patterns:
+    if not files:
         raise SystemExit(f"No pattern images found in {pattern_dir}")
-    return patterns
+    return files
+
+
+def load_pattern_specs(pattern_dir: Path, *, legacy_14_patterns: bool) -> list[PatternSpec]:
+    files_by_id: dict[int, Path] = {}
+    for path in image_files(pattern_dir):
+        pattern_id = pattern_id_from_filename(path)
+        if pattern_id is None:
+            continue
+        files_by_id.setdefault(pattern_id, path)
+
+    required_ids = LEGACY_PATTERN_IDS if legacy_14_patterns else FULL_PATTERN_IDS
+    capture_order = LEGACY_PATTERN_IDS if legacy_14_patterns else DEFAULT_CAPTURE_ORDER
+    specs: list[PatternSpec] = []
+    missing: list[int] = []
+
+    for pattern_id in capture_order:
+        label = PATTERN_LABELS[pattern_id]
+        if pattern_id >= 14:
+            normal_id = pattern_id - 12
+            source_path = files_by_id.get(normal_id)
+            if source_path is not None:
+                specs.append(
+                    PatternSpec(
+                        pattern_id=pattern_id,
+                        label=label,
+                        source_path=source_path,
+                        invert_source=True,
+                    )
+                )
+                continue
+
+        source_path = files_by_id.get(pattern_id)
+        if source_path is None:
+            missing.append(pattern_id)
+            continue
+        specs.append(PatternSpec(pattern_id=pattern_id, label=label, source_path=source_path))
+
+    if missing:
+        missing_text = ", ".join(f"{pattern_id:02d} {PATTERN_LABELS[pattern_id]}" for pattern_id in missing)
+        raise SystemExit(f"Pattern directory is missing required pattern ids: {missing_text}")
+
+    loaded_ids = {spec.pattern_id for spec in specs}
+    missing_required = [pattern_id for pattern_id in required_ids if pattern_id not in loaded_ids]
+    if missing_required:
+        missing_text = ", ".join(f"{pattern_id:02d} {PATTERN_LABELS[pattern_id]}" for pattern_id in missing_required)
+        raise SystemExit(f"Pattern contract could not be built. Missing ids: {missing_text}")
+
+    return specs
 
 
 def read_image(cv2, path: Path):
@@ -84,6 +246,50 @@ def read_image(cv2, path: Path):
     return image
 
 
+def invert_image(image: Any) -> Any:
+    import numpy as np  # type: ignore
+
+    max_value = np.iinfo(image.dtype).max if np.issubdtype(image.dtype, np.integer) else 1.0
+    return (max_value - image).astype(image.dtype, copy=False)
+
+
+def pattern_image(cv2, spec: PatternSpec) -> Any:
+    image = read_image(cv2, spec.source_path)
+    if spec.invert_source:
+        image = invert_image(image)
+    return image
+
+
+def to_grayscale(cv2, image: Any) -> Any:
+    if len(image.shape) == 2:
+        return image
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
+def dtype_max(image: Any) -> int:
+    import numpy as np  # type: ignore
+
+    if np.issubdtype(image.dtype, np.integer):
+        return int(np.iinfo(image.dtype).max)
+    return 1
+
+
+def scale_threshold(value: int, sensor_max: int) -> int:
+    if sensor_max <= 255 or value > 255:
+        return int(value)
+    return int(round(value * (sensor_max / 255.0)))
+
+
+def final_pattern_filename(pattern_id: int) -> str:
+    return f"pattern_{pattern_id:03d}{FINAL_DECODE_SUFFIX}"
+
+
+def mask_filename(pattern_id: int, name: str) -> str:
+    return f"pattern_{pattern_id:03d}_{name}.png"
+
+
 def normalize_suffix(value: str) -> str:
     suffix = value.lower().strip()
     if not suffix:
@@ -93,6 +299,103 @@ def normalize_suffix(value: str) -> str:
     if suffix not in {".png", ".tif", ".tiff", ".bmp", ".jpg", ".jpeg"}:
         raise argparse.ArgumentTypeError("save format must be png, tif, tiff, bmp, jpg, or jpeg")
     return suffix
+
+
+def read_json_file(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON file: {path} ({exc})") from exc
+
+
+def parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def default_hdr_brackets(args: argparse.Namespace) -> tuple[ExposureBracket, ...]:
+    mid_exposure = int(args.exposure_us or 10000)
+    gain_db = float(args.gain_db if args.gain_db is not None else 0.0)
+    return (
+        ExposureBracket("short", max(1, mid_exposure // 4), gain_db),
+        ExposureBracket("mid", max(1, mid_exposure), gain_db),
+        ExposureBracket("long", max(1, mid_exposure * 4), gain_db),
+    )
+
+
+def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
+    config = read_json_file(args.camera_config)
+    capture_section = config.get("capture", {})
+    hdr_section = capture_section.get("hdr", {})
+    metadata_section = capture_section.get("metadata", {})
+
+    bracket_items = hdr_section.get("brackets", [])
+    brackets: list[ExposureBracket] = []
+    for index, item in enumerate(bracket_items):
+        if not isinstance(item, dict):
+            continue
+        name = safe_filename_token(str(item.get("name") or f"bracket_{index:02d}"))
+        exposure_us = int(item.get("exposure_us", args.exposure_us or 10000))
+        gain_db = float(item.get("gain_db", args.gain_db if args.gain_db is not None else 0.0))
+        brackets.append(ExposureBracket(name=name, exposure_us=max(1, exposure_us), gain_db=gain_db))
+    if not brackets:
+        brackets = list(default_hdr_brackets(args))
+
+    output_bit_depth = int(hdr_section.get("output_bit_depth", 8))
+    if output_bit_depth not in {8, 16}:
+        raise SystemExit("capture.hdr.output_bit_depth must be 8 or 16")
+
+    scan_type = args.scan_type or str(metadata_section.get("scan_type", "object"))
+    if scan_type not in {"reference", "object"}:
+        raise SystemExit("--scan-type must be 'reference' or 'object'")
+
+    focus_confirmed = (
+        args.focus_confirmed
+        if args.focus_confirmed is not None
+        else parse_bool(metadata_section.get("focus_confirmed"), False)
+    )
+    scheimpflug_confirmed = (
+        args.scheimpflug_confirmed
+        if args.scheimpflug_confirmed is not None
+        else parse_bool(metadata_section.get("scheimpflug_confirmed"), False)
+    )
+    keystone_predistortion = (
+        args.keystone_predistortion
+        if args.keystone_predistortion is not None
+        else parse_bool(metadata_section.get("keystone_predistortion"), False)
+    )
+
+    return CaptureConfig(
+        hdr=HdrConfig(
+            enabled=parse_bool(hdr_section.get("enabled"), True),
+            output_bit_depth=output_bit_depth,
+            saturated_threshold=int(hdr_section.get("saturated_threshold", 250)),
+            dark_threshold=int(hdr_section.get("dark_threshold", 5)),
+            brackets=tuple(brackets),
+        ),
+        rig=RigMetadata(
+            scan_type=scan_type,
+            projector_tilt_deg=float(args.projector_tilt_deg if args.projector_tilt_deg is not None else metadata_section.get("projector_tilt_deg", 30.0)),
+            focus_confirmed=focus_confirmed,
+            scheimpflug_confirmed=scheimpflug_confirmed,
+            rig_id=str(args.rig_id if args.rig_id is not None else metadata_section.get("rig_id", "")),
+            calibration_id=str(args.calibration_id if args.calibration_id is not None else metadata_section.get("calibration_id", "")),
+            projector_brightness=str(args.projector_brightness if args.projector_brightness is not None else metadata_section.get("projector_brightness", "")),
+            keystone_predistortion=keystone_predistortion,
+        ),
+    )
 
 
 def write_image(cv2, path: Path, image: Any) -> int:
@@ -293,16 +596,24 @@ def append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         return
     fieldnames = [
         "scan_id",
+        "scan_type",
         "angle_deg",
         "pattern_id",
+        "label",
         "capture_id",
         "attempt",
+        "bracket_name",
+        "exposure_us",
+        "gain_db",
         "pattern_filename",
         "pattern_display_timestamp_pc_ms",
         "capture_command_timestamp_pc_ms",
         "camera_timestamp_ms",
         "camera_frame_index",
         "received_image_filename",
+        "final_filename",
+        "saturated_mask_filename",
+        "dark_mask_filename",
         "size_bytes",
         "status",
         "error",
@@ -335,11 +646,98 @@ def save_camera_frame(cv2, frame: CameraFrame, output_path: Path) -> int:
     return write_image(cv2, output_path, frame.image)
 
 
+def synthesize_frame(cv2, pattern: Any, bracket: ExposureBracket, hdr: HdrConfig) -> Any:
+    import numpy as np  # type: ignore
+
+    gray = to_grayscale(cv2, pattern)
+    max_scale = max(item.exposure_gain_scale for item in hdr.brackets)
+    scale = bracket.exposure_gain_scale / max(1.0, max_scale)
+    simulated = np.rint(np.clip(gray.astype(np.float32) * scale, 0, dtype_max(gray)))
+    return simulated.astype(gray.dtype)
+
+
+def merge_hdr_frames(cv2, frames: list[Any], brackets: tuple[ExposureBracket, ...], hdr: HdrConfig) -> tuple[Any, Any, Any, dict[str, Any]]:
+    import numpy as np  # type: ignore
+
+    if not frames:
+        raise RuntimeError("HDR merge requires at least one frame")
+
+    gray_frames = [to_grayscale(cv2, frame) for frame in frames]
+    first_shape = gray_frames[0].shape
+    mismatched = [index for index, frame in enumerate(gray_frames) if frame.shape != first_shape]
+    if mismatched:
+        raise RuntimeError(f"HDR bracket frame shapes do not match; mismatched indices: {mismatched}")
+
+    stack = np.stack(gray_frames, axis=0)
+    sensor_max = dtype_max(gray_frames[0])
+    saturated_threshold = min(sensor_max, scale_threshold(hdr.saturated_threshold, sensor_max))
+    dark_threshold = min(sensor_max, scale_threshold(hdr.dark_threshold, sensor_max))
+
+    scales = np.array([bracket.exposure_gain_scale for bracket in brackets], dtype=np.float32)
+    priority = np.argsort(scales)
+    chosen = np.full(first_shape, int(priority[0]), dtype=np.int32)
+    for index in priority:
+        valid = stack[index] < saturated_threshold
+        chosen[valid] = int(index)
+
+    selected = np.take_along_axis(stack, chosen[None, :, :], axis=0)[0].astype(np.float32)
+    selected_scales = scales[chosen]
+    max_scale = float(scales.max())
+    normalized = selected / np.maximum(selected_scales, 1.0) * max_scale
+    normalized = np.clip(normalized, 0, sensor_max)
+
+    output_max = 65535 if hdr.output_bit_depth == 16 else 255
+    output_dtype = np.uint16 if hdr.output_bit_depth == 16 else np.uint8
+    merged = np.clip(normalized * (output_max / max(1, sensor_max)), 0, output_max).astype(output_dtype)
+
+    saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
+    dark_mask = np.all(stack <= dark_threshold, axis=0).astype(np.uint8) * 255
+
+    report = {
+        "algorithm": "longest_unsaturated_radiance_normalized",
+        "output_bit_depth": hdr.output_bit_depth,
+        "saturated_threshold": int(saturated_threshold),
+        "dark_threshold": int(dark_threshold),
+        "saturated_pixel_count": int(np.count_nonzero(saturated_mask)),
+        "dark_pixel_count": int(np.count_nonzero(dark_mask)),
+        "input_dtype": str(gray_frames[0].dtype),
+        "input_shape": [int(first_shape[0]), int(first_shape[1])],
+        "bracket_priority": [brackets[int(index)].name for index in priority],
+    }
+    return merged, saturated_mask, dark_mask, report
+
+
+def validate_decode_outputs(folder: Path, expected_ids: tuple[int, ...]) -> list[int]:
+    return [
+        pattern_id
+        for pattern_id in expected_ids
+        if not (folder / final_pattern_filename(pattern_id)).exists()
+    ]
+
+
+def relative_to_scan(path: Path, scan_dir: Path) -> str:
+    try:
+        return path.relative_to(scan_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def run_scan(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
     pattern_dir = args.patterns.resolve()
-    patterns = load_patterns(pattern_dir)
-    first_image = read_image(cv2, patterns[0])
+    patterns = load_pattern_specs(pattern_dir, legacy_14_patterns=args.legacy_14_patterns)
+    first_image = pattern_image(cv2, patterns[0])
+    capture_config = load_capture_config(args)
+    hdr = capture_config.hdr
+    if not hdr.enabled:
+        hdr = HdrConfig(
+            enabled=False,
+            output_bit_depth=hdr.output_bit_depth,
+            saturated_threshold=hdr.saturated_threshold,
+            dark_threshold=hdr.dark_threshold,
+            brackets=(ExposureBracket("single", int(args.exposure_us or 10000), float(args.gain_db or 0.0)),),
+        )
+
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -348,22 +746,31 @@ def run_scan(args: argparse.Namespace) -> int:
     scan_dir.mkdir(parents=True, exist_ok=True)
 
     angles = parse_csv_ints(args.angles, "angles")
+    expected_pattern_ids = LEGACY_PATTERN_IDS if args.legacy_14_patterns else FULL_PATTERN_IDS
     scan_rows: list[dict[str, Any]] = []
+    final_pattern_rows: list[dict[str, Any]] = []
+    hdr_reports: list[dict[str, Any]] = []
     display: PatternDisplay | None = None
     camera: CameraInterface | None = None
     camera_settings: CameraSettings | None = None
     capture_id = 0
     aborted = False
 
-    print(f"[scan] scan_id={scan_id} patterns={len(patterns)} angles={angles}", flush=True)
+    print(
+        f"[scan] scan_id={scan_id} scan_type={capture_config.rig.scan_type} "
+        f"patterns={len(patterns)} angles={angles} brackets={len(hdr.brackets)}",
+        flush=True,
+    )
 
     try:
-        if not args.no_camera:
+        synthetic_capture = bool(args.dry_run or args.no_camera)
+        if not synthetic_capture:
             camera, camera_settings = open_camera(args)
         else:
-            print("[camera] disabled by --no-camera", flush=True)
+            mode = "dry-run synthetic" if args.dry_run else "synthetic because --no-camera was set"
+            print(f"[camera] {mode}", flush=True)
 
-        if not args.no_display:
+        if not args.no_display and not args.dry_run:
             display = PatternDisplay(args, first_image)
             display.open(cv2)
             display.black(cv2)
@@ -393,88 +800,196 @@ def run_scan(args: argparse.Namespace) -> int:
                 elif not args.no_angle_prompt:
                     input(f"Set rotation stage to {angle} degrees, then press Enter...")
 
-            for pattern_id, pattern_path in enumerate(patterns):
-                image = read_image(cv2, pattern_path)
-                success = False
+            angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
+            angle_dir.mkdir(parents=True, exist_ok=True)
+
+            for spec in patterns:
+                projected = pattern_image(cv2, spec)
+                if display is not None:
+                    display.show(cv2, projected)
+                display_ts = now_ms()
+                time.sleep(args.settle_ms / 1000.0)
+
+                bracket_frames: list[Any] = []
+                bracket_entries: list[dict[str, Any]] = []
                 last_error = ""
 
-                for attempt in range(1, args.retries + 2):
-                    if display is not None:
-                        display.show(cv2, image)
-                    display_ts = now_ms()
-                    time.sleep(args.settle_ms / 1000.0)
-
-                    command_ts = now_ms()
-                    row: dict[str, Any] = {
-                        "scan_id": scan_id,
-                        "angle_deg": angle,
-                        "pattern_id": pattern_id,
-                        "capture_id": capture_id,
-                        "attempt": attempt,
-                        "pattern_filename": pattern_path.name,
-                        "pattern_display_timestamp_pc_ms": display_ts,
-                        "capture_command_timestamp_pc_ms": command_ts,
-                    }
-
-                    try:
-                        frame: CameraFrame | None = None
-                        filename = ""
-                        size_bytes = 0
-                        if camera is not None:
-                            frame = camera.capture_frame()
-                            filename = capture_filename(
-                                scan_id=scan_id,
-                                angle_deg=angle,
-                                pattern_id=pattern_id,
-                                capture_id=capture_id,
-                                suffix=args.save_format,
-                            )
-                            size_bytes = save_camera_frame(cv2, frame, scan_dir / filename)
-
-                        row.update(
-                            {
-                                "camera_timestamp_ms": "" if frame is None else frame.timestamp_ms,
-                                "camera_frame_index": "" if frame is None else frame.frame_index,
-                                "received_image_filename": filename,
-                                "size_bytes": size_bytes,
-                                "status": "ok",
-                                "error": "",
-                            }
-                        )
-                        scan_rows.append(row)
-                        success = True
-                        print(
-                            f"[capture] angle={angle:03d} pattern={pattern_id:03d} "
-                            f"capture={capture_id:03d} saved={bool(camera)}",
-                            flush=True,
-                        )
-                        capture_id += 1
-                        break
-                    except Exception as exc:
-                        last_error = str(exc)
-                        row.update(
-                            {
-                                "status": "retry" if attempt <= args.retries else "failed",
-                                "error": last_error,
-                            }
-                        )
-                        scan_rows.append(row)
-                        print(
-                            f"[capture] failed angle={angle:03d} pattern={pattern_id:03d} "
-                            f"capture={capture_id:03d}: {last_error}",
-                            flush=True,
-                        )
-                        capture_id += 1
-                        if attempt <= args.retries:
-                            time.sleep(args.retry_delay_ms / 1000.0)
-
-                if not success:
-                    aborted = True
-                    raise RuntimeError(
-                        f"scan aborted at angle={angle} pattern={pattern_id}: {last_error}"
+                for bracket in hdr.brackets:
+                    success = False
+                    bracket_token = safe_filename_token(bracket.name)
+                    exposure_path = (
+                        angle_dir
+                        / "exposures"
+                        / f"pattern_{spec.pattern_id:03d}"
+                        / f"{bracket_token}{args.save_format}"
                     )
 
+                    for attempt in range(1, args.retries + 2):
+                        command_ts = now_ms()
+                        row: dict[str, Any] = {
+                            "scan_id": scan_id,
+                            "scan_type": capture_config.rig.scan_type,
+                            "angle_deg": angle,
+                            "pattern_id": spec.pattern_id,
+                            "label": spec.label,
+                            "capture_id": capture_id,
+                            "attempt": attempt,
+                            "bracket_name": bracket.name,
+                            "exposure_us": bracket.exposure_us,
+                            "gain_db": bracket.gain_db,
+                            "pattern_filename": spec.source_path.name,
+                            "pattern_display_timestamp_pc_ms": display_ts,
+                            "capture_command_timestamp_pc_ms": command_ts,
+                        }
+
+                        try:
+                            if camera is not None:
+                                camera.configure_capture(
+                                    exposure_us=bracket.exposure_us,
+                                    gain_db=bracket.gain_db,
+                                )
+                                if args.bracket_settle_ms > 0:
+                                    time.sleep(args.bracket_settle_ms / 1000.0)
+                                frame = camera.capture_frame()
+                            else:
+                                synthetic = synthesize_frame(cv2, projected, bracket, hdr)
+                                frame = CameraFrame(
+                                    image=synthetic,
+                                    timestamp_ms=now_ms(),
+                                    frame_index=capture_id,
+                                    pixel_format=str(synthetic.dtype),
+                                    metadata={
+                                        "provider": "synthetic",
+                                        "exposure_us": bracket.exposure_us,
+                                        "gain_db": bracket.gain_db,
+                                    },
+                                )
+
+                            size_bytes = save_camera_frame(cv2, frame, exposure_path)
+                            filename = relative_to_scan(exposure_path, scan_dir)
+                            row.update(
+                                {
+                                    "camera_timestamp_ms": frame.timestamp_ms,
+                                    "camera_frame_index": frame.frame_index,
+                                    "received_image_filename": filename,
+                                    "size_bytes": size_bytes,
+                                    "status": "ok",
+                                    "error": "",
+                                }
+                            )
+                            scan_rows.append(row)
+                            bracket_frames.append(frame.image)
+                            bracket_entries.append(
+                                {
+                                    "name": bracket.name,
+                                    "filename": filename,
+                                    "exposure_us": bracket.exposure_us,
+                                    "gain_db": bracket.gain_db,
+                                    "capture_timestamp_pc_ms": command_ts,
+                                    "camera_timestamp_ms": frame.timestamp_ms,
+                                    "camera_frame_index": frame.frame_index,
+                                    "pixel_format": frame.pixel_format,
+                                    "camera_metadata": frame.metadata,
+                                }
+                            )
+                            success = True
+                            print(
+                                f"[capture] angle={angle:03d} pattern={spec.pattern_id:03d} "
+                                f"{spec.label} bracket={bracket.name} capture={capture_id:03d}",
+                                flush=True,
+                            )
+                            capture_id += 1
+                            break
+                        except Exception as exc:
+                            last_error = str(exc)
+                            row.update(
+                                {
+                                    "status": "retry" if attempt <= args.retries else "failed",
+                                    "error": last_error,
+                                }
+                            )
+                            scan_rows.append(row)
+                            print(
+                                f"[capture] failed angle={angle:03d} pattern={spec.pattern_id:03d} "
+                                f"bracket={bracket.name} capture={capture_id:03d}: {last_error}",
+                                flush=True,
+                            )
+                            capture_id += 1
+                            if attempt <= args.retries:
+                                time.sleep(args.retry_delay_ms / 1000.0)
+
+                    if not success:
+                        aborted = True
+                        raise RuntimeError(
+                            f"scan aborted at angle={angle} pattern={spec.pattern_id} "
+                            f"bracket={bracket.name}: {last_error}"
+                        )
+
+                merged, saturated_mask, dark_mask, merge_report = merge_hdr_frames(
+                    cv2,
+                    bracket_frames,
+                    hdr.brackets,
+                    hdr,
+                )
+                final_path = angle_dir / final_pattern_filename(spec.pattern_id)
+                saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
+                dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
+                final_size = write_image(cv2, final_path, merged)
+                saturated_size = write_image(cv2, saturated_path, saturated_mask)
+                dark_size = write_image(cv2, dark_path, dark_mask)
+
+                final_filename = relative_to_scan(final_path, scan_dir)
+                saturated_filename = relative_to_scan(saturated_path, scan_dir)
+                dark_filename = relative_to_scan(dark_path, scan_dir)
+                merge_report.update(
+                    {
+                        "filename": final_filename,
+                        "size_bytes": final_size,
+                        "saturated_mask_filename": saturated_filename,
+                        "saturated_mask_size_bytes": saturated_size,
+                        "dark_mask_filename": dark_filename,
+                        "dark_mask_size_bytes": dark_size,
+                    }
+                )
+                pattern_entry = {
+                    "pattern_id": spec.pattern_id,
+                    "label": spec.label,
+                    "filename": final_filename,
+                    "angle_deg": angle,
+                    "source_pattern_filename": spec.source_path.name,
+                    "source_inverted": spec.invert_source,
+                    "brackets": bracket_entries,
+                    "merge": merge_report,
+                }
+                final_pattern_rows.append(pattern_entry)
+                hdr_reports.append(
+                    {
+                        "angle_deg": angle,
+                        "pattern_id": spec.pattern_id,
+                        "label": spec.label,
+                        **merge_report,
+                    }
+                )
+                for row in scan_rows[-len(bracket_entries) :]:
+                    if row.get("pattern_id") == spec.pattern_id and row.get("angle_deg") == angle:
+                        row["final_filename"] = final_filename
+                        row["saturated_mask_filename"] = saturated_filename
+                        row["dark_mask_filename"] = dark_filename
+                print(
+                    f"[merge] angle={angle:03d} pattern={spec.pattern_id:03d} "
+                    f"saved={final_filename}",
+                    flush=True,
+                )
+
             previous_angle = angle
+
+        for angle in angles:
+            angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
+            missing = validate_decode_outputs(angle_dir, expected_pattern_ids)
+            if missing:
+                missing_text = ", ".join(f"{pattern_id:02d} {PATTERN_LABELS[pattern_id]}" for pattern_id in missing)
+                raise RuntimeError(f"decode output validation failed for {angle_dir}: missing {missing_text}")
+        print("[scan] decode output validation ok", flush=True)
 
     except KeyboardInterrupt:
         aborted = True
@@ -500,24 +1015,55 @@ def run_scan(args: argparse.Namespace) -> int:
             "scan_id": scan_id,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "status": "aborted" if aborted else "ok",
+            "scan_type": capture_config.rig.scan_type,
             "pattern_dir": str(pattern_dir),
-            "patterns": [path.name for path in patterns],
+            "pattern_contract": [
+                {"pattern_id": pattern_id, "label": label}
+                for pattern_id, label in PATTERN_CONTRACT
+                if pattern_id in expected_pattern_ids
+            ],
+            "capture_order": [
+                {"pattern_id": spec.pattern_id, "label": spec.label, "source": spec.source_path.name, "inverted": spec.invert_source}
+                for spec in patterns
+            ],
             "angles_deg": angles,
+            "metadata": asdict(capture_config.rig),
             "settings": {
                 "settle_ms": args.settle_ms,
+                "bracket_settle_ms": args.bracket_settle_ms,
                 "capture_timeout_ms": args.camera_timeout_ms,
                 "retries": args.retries,
                 "camera": camera_settings.as_dict() if camera_settings else None,
+                "synthetic_capture": bool(args.dry_run or args.no_camera),
                 "save_format": args.save_format,
+                "final_decode_format": FINAL_DECODE_SUFFIX,
+                "hdr": asdict(hdr),
+                "legacy_14_patterns": args.legacy_14_patterns,
             },
+            "final_patterns": final_pattern_rows,
+            "hdr_merge_report": hdr_reports,
             "rows": scan_rows,
         }
         (scan_dir / "scan_log.json").write_text(
             json.dumps(log, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        (scan_dir / "hdr_merge_report.json").write_text(
+            json.dumps(
+                {
+                    "scan_id": scan_id,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "scan_type": capture_config.rig.scan_type,
+                    "patterns": hdr_reports,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         append_csv(scan_dir / "scan_log.csv", scan_rows)
         print(f"[scan] log saved: {scan_dir / 'scan_log.json'}", flush=True)
+        print(f"[scan] hdr report saved: {scan_dir / 'hdr_merge_report.json'}", flush=True)
         print(f"[scan] csv saved: {scan_dir / 'scan_log.csv'}", flush=True)
 
     return 1 if aborted else 0
@@ -689,6 +1235,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-ms", default=300, type=int)
     parser.add_argument("--pre-black-ms", default=300, type=int)
     parser.add_argument("--finish-black-ms", default=300, type=int)
+    parser.add_argument("--bracket-settle-ms", default=50, type=int)
     parser.add_argument("--retries", default=2, type=int)
     parser.add_argument("--retry-delay-ms", default=300, type=int)
     parser.add_argument("--angles", default="0")
@@ -698,8 +1245,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotation-command")
     parser.add_argument("--rotate-first-angle", action="store_true")
     parser.add_argument("--scan-id")
+    parser.add_argument("--scan-type", choices=("reference", "object"))
+    parser.add_argument("--projector-tilt-deg", type=float)
+    parser.add_argument("--focus-confirmed", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--scheimpflug-confirmed", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--rig-id")
+    parser.add_argument("--calibration-id")
+    parser.add_argument("--projector-brightness")
+    parser.add_argument("--keystone-predistortion", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--no-camera", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Generate synthetic captures without camera or projector display.")
+    parser.add_argument("--legacy-14-patterns", action="store_true", help="Capture only ids 0..13 for older decoders.")
 
     parser.add_argument("--camera-config", default=Path("camera_config.json"), type=Path)
     parser.add_argument("--camera-provider", choices=("ximea", "mock"))

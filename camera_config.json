@@ -19,5 +19,40 @@
       "fps": 15.0,
       "sample_image": ""
     }
+  },
+  "capture": {
+    "hdr": {
+      "enabled": true,
+      "output_bit_depth": 8,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "brackets": [
+        {
+          "name": "short",
+          "exposure_us": 2500,
+          "gain_db": 0.0
+        },
+        {
+          "name": "mid",
+          "exposure_us": 10000,
+          "gain_db": 0.0
+        },
+        {
+          "name": "long",
+          "exposure_us": 40000,
+          "gain_db": 0.0
+        }
+      ]
+    },
+    "metadata": {
+      "scan_type": "object",
+      "projector_tilt_deg": 30.0,
+      "focus_confirmed": false,
+      "scheimpflug_confirmed": false,
+      "rig_id": "",
+      "calibration_id": "",
+      "projector_brightness": "",
+      "keystone_predistortion": false
+    }
   }
 }

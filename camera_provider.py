@@ -79,6 +79,10 @@ class CameraInterface(ABC):
     def capture_frame(self) -> CameraFrame:
         pass
 
+    def configure_capture(self, *, exposure_us: int, gain_db: float) -> None:
+        self.settings.exposure_us = int(exposure_us)
+        self.settings.gain_db = float(gain_db)
+
     @abstractmethod
     def stop(self) -> None:
         pass
@@ -208,7 +212,11 @@ class MockCamera(CameraInterface):
             timestamp_ms=int(time.time() * 1000),
             frame_index=self._frame_index,
             pixel_format="mono8",
-            metadata={"provider": "mock"},
+            metadata={
+                "provider": "mock",
+                "exposure_us": self.settings.exposure_us,
+                "gain_db": self.settings.gain_db,
+            },
         )
         self._frame_index += 1
         if self.settings.fps > 0:
@@ -350,8 +358,16 @@ class XimeaUvCamera(CameraInterface):
                 "padding_x": int(image.padding_x),
                 "black_level": int(image.black_level),
                 "transport_format": int(image.transport_frm),
+                "exposure_us": self.settings.exposure_us,
+                "gain_db": self.settings.gain_db,
             },
         )
+
+    def configure_capture(self, *, exposure_us: int, gain_db: float) -> None:
+        super().configure_capture(exposure_us=exposure_us, gain_db=gain_db)
+        self._require_open()
+        self._try_set_int("exposure", self.settings.exposure_us)
+        self._try_set_float("gain", self.settings.gain_db)
 
     def stop(self) -> None:
         if self._lib is not None and self._opened and self._started:
@@ -390,6 +406,7 @@ class XimeaUvCamera(CameraInterface):
         if self.settings.height > 0:
             self._try_set_int("height", self.settings.height)
 
+        self._disable_auto_controls()
         self._try_set_int("exposure", self.settings.exposure_us)
         self._try_set_float("gain", self.settings.gain_db)
 
@@ -404,6 +421,10 @@ class XimeaUvCamera(CameraInterface):
             if not self._try_set_int("acq_timing_mode", self.XI_ACQ_TIMING_MODE_FRAME_RATE):
                 self._try_set_int("acq_timing_mode", self.XI_ACQ_TIMING_MODE_FRAME_RATE_LIMIT)
             self._try_set_float("framerate", self.settings.fps)
+
+    def _disable_auto_controls(self) -> None:
+        for name in ("aeag", "auto_wb", "auto_focus"):
+            self._try_set_int(name, 0)
 
     def _image_bytes_to_array(self, frame_bytes: bytes, image: XI_IMG) -> Any:
         import numpy as np  # type: ignore
