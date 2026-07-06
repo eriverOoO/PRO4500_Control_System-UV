@@ -48,6 +48,7 @@ enum ControlId {
     IDC_WINDOWED,
     IDC_STRETCH,
     IDC_PAUSE_FIRST,
+    IDC_SAVE_ALL_IMAGES,
     IDC_LOG,
     IDC_START,
     IDC_STOP,
@@ -91,6 +92,7 @@ struct AppState {
     HWND windowed{};
     HWND stretch{};
     HWND pauseFirst{};
+    HWND saveAllImages{};
     HWND log{};
     HWND start{};
     HWND stop{};
@@ -398,6 +400,7 @@ std::wstring build_controller_command(JobMode mode) {
     if (SendMessageW(g_app.windowed, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --windowed";
     if (SendMessageW(g_app.stretch, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --stretch";
     if (SendMessageW(g_app.pauseFirst, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --pause-before-first-angle";
+    if (SendMessageW(g_app.saveAllImages, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --save-all-images";
 
     if (mode == JobMode::Preview) {
         cmd << L" --preview";
@@ -415,6 +418,7 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.preview, !running);
     EnableWindow(g_app.singleCapture, !running);
     EnableWindow(g_app.continuousCapture, !running);
+    EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.stop, running);
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
 }
@@ -568,6 +572,7 @@ void build_ui(HWND hwnd) {
     g_app.windowed = make_checkbox(hwnd, IDC_WINDOWED, L"Windowed projection", margin, y, 170, 24, false);
     g_app.stretch = make_checkbox(hwnd, IDC_STRETCH, L"Stretch patterns", 205, y, 140, 24, false);
     g_app.pauseFirst = make_checkbox(hwnd, IDC_PAUSE_FIRST, L"Pause before first angle", 370, y, 190, 24, false);
+    g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, false);
 
     y += 42;
     g_app.start = make_button(hwnd, IDC_START, L"Start Scan", margin, y, 115, 32);

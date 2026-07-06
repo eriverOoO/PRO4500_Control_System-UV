@@ -262,3 +262,19 @@ captures/<scan_id>/
   캡처를 계속 진행하면서 경고 로그를 남깁니다.
 - 제어 패널은 Python 컨트롤러를 자식 프로세스로 실행하고, 해당 로그 출력을
   메인 창에 표시합니다.
+## Save Policy
+
+The native control panel includes a `Save All` option.
+
+- Off: save only final decoder images, `pattern_000.png` ... `pattern_021.png`.
+- On: also save raw exposure brackets under `exposures/` and HDR masks under `hdr_masks/`.
+
+For one scan angle, `Save All` off writes 22 PNG images. `Save All` on writes
+132 PNG images: 22 final decoder images, 66 raw bracket images, and 44 HDR mask
+images.
+
+CLI equivalent:
+
+```powershell
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns --output .\captures --scan-type reference --angles 0
+```
