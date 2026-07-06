@@ -646,6 +646,10 @@ def save_camera_frame(cv2, frame: CameraFrame, output_path: Path) -> int:
     return write_image(cv2, output_path, frame.image)
 
 
+def optional_image_filename(path: Path | None, scan_dir: Path) -> str:
+    return "" if path is None else relative_to_scan(path, scan_dir)
+
+
 def synthesize_frame(cv2, pattern: Any, bracket: ExposureBracket, hdr: HdrConfig) -> Any:
     import numpy as np  # type: ignore
 
@@ -817,12 +821,14 @@ def run_scan(args: argparse.Namespace) -> int:
                 for bracket in hdr.brackets:
                     success = False
                     bracket_token = safe_filename_token(bracket.name)
-                    exposure_path = (
-                        angle_dir
-                        / "exposures"
-                        / f"pattern_{spec.pattern_id:03d}"
-                        / f"{bracket_token}{args.save_format}"
-                    )
+                    exposure_path = None
+                    if args.save_all_images:
+                        exposure_path = (
+                            angle_dir
+                            / "exposures"
+                            / f"pattern_{spec.pattern_id:03d}"
+                            / f"{bracket_token}{args.save_format}"
+                        )
 
                     for attempt in range(1, args.retries + 2):
                         command_ts = now_ms()
@@ -865,8 +871,10 @@ def run_scan(args: argparse.Namespace) -> int:
                                     },
                                 )
 
-                            size_bytes = save_camera_frame(cv2, frame, exposure_path)
-                            filename = relative_to_scan(exposure_path, scan_dir)
+                            size_bytes = 0
+                            if exposure_path is not None:
+                                size_bytes = save_camera_frame(cv2, frame, exposure_path)
+                            filename = optional_image_filename(exposure_path, scan_dir)
                             row.update(
                                 {
                                     "camera_timestamp_ms": frame.timestamp_ms,
@@ -932,15 +940,20 @@ def run_scan(args: argparse.Namespace) -> int:
                     hdr,
                 )
                 final_path = angle_dir / final_pattern_filename(spec.pattern_id)
-                saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
-                dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
                 final_size = write_image(cv2, final_path, merged)
-                saturated_size = write_image(cv2, saturated_path, saturated_mask)
-                dark_size = write_image(cv2, dark_path, dark_mask)
 
                 final_filename = relative_to_scan(final_path, scan_dir)
-                saturated_filename = relative_to_scan(saturated_path, scan_dir)
-                dark_filename = relative_to_scan(dark_path, scan_dir)
+                saturated_filename = ""
+                dark_filename = ""
+                saturated_size = 0
+                dark_size = 0
+                if args.save_all_images:
+                    saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
+                    dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
+                    saturated_size = write_image(cv2, saturated_path, saturated_mask)
+                    dark_size = write_image(cv2, dark_path, dark_mask)
+                    saturated_filename = relative_to_scan(saturated_path, scan_dir)
+                    dark_filename = relative_to_scan(dark_path, scan_dir)
                 merge_report.update(
                     {
                         "filename": final_filename,
@@ -1037,6 +1050,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 "synthetic_capture": bool(args.dry_run or args.no_camera),
                 "save_format": args.save_format,
                 "final_decode_format": FINAL_DECODE_SUFFIX,
+                "save_all_images": bool(args.save_all_images),
                 "hdr": asdict(hdr),
                 "legacy_14_patterns": args.legacy_14_patterns,
             },
@@ -1257,6 +1271,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-camera", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Generate synthetic captures without camera or projector display.")
     parser.add_argument("--legacy-14-patterns", action="store_true", help="Capture only ids 0..13 for older decoders.")
+    parser.add_argument(
+        "--save-all-images",
+        action="store_true",
+        help="Save raw exposure brackets and HDR masks in addition to final decoder images.",
+    )
 
     parser.add_argument("--camera-config", default=Path("camera_config.json"), type=Path)
     parser.add_argument("--camera-provider", choices=("ximea", "mock"))
