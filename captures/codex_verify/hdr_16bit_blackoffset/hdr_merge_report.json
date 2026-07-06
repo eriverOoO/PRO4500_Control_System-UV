@@ -1,0 +1,733 @@
+{
+  "scan_id": "hdr_16bit_blackoffset",
+  "created_at": "2026-07-06T16:30:53",
+  "scan_type": "object",
+  "patterns": [
+    {
+      "angle_deg": 0,
+      "pattern_id": 0,
+      "label": "White",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 0,
+      "invalid_pixel_count": 0,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_000.png",
+      "size_bytes": 4078,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 1,
+      "label": "Black",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 1024000,
+      "invalid_pixel_count": 1024000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_001.png",
+      "size_bytes": 3377,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 2,
+      "label": "Gray0",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_002.png",
+      "size_bytes": 5078,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 14,
+      "label": "Gray0_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_014.png",
+      "size_bytes": 5778,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 3,
+      "label": "Gray1",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_003.png",
+      "size_bytes": 6980,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 15,
+      "label": "Gray1_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_015.png",
+      "size_bytes": 7596,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 4,
+      "label": "Gray2",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_004.png",
+      "size_bytes": 10210,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 16,
+      "label": "Gray2_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_016.png",
+      "size_bytes": 10710,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 5,
+      "label": "Gray3",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_005.png",
+      "size_bytes": 15827,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 17,
+      "label": "Gray3_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_017.png",
+      "size_bytes": 16327,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 6,
+      "label": "Gray4",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_006.png",
+      "size_bytes": 25464,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 18,
+      "label": "Gray4_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_018.png",
+      "size_bytes": 25864,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 7,
+      "label": "Gray5",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_007.png",
+      "size_bytes": 46236,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 19,
+      "label": "Gray5_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_019.png",
+      "size_bytes": 46636,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 8,
+      "label": "Gray6",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_008.png",
+      "size_bytes": 84703,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 20,
+      "label": "Gray6_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_020.png",
+      "size_bytes": 84893,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 9,
+      "label": "Gray7",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_009.png",
+      "size_bytes": 142513,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 21,
+      "label": "Gray7_inv",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 512000,
+      "invalid_pixel_count": 512000,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_021.png",
+      "size_bytes": 142777,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 10,
+      "label": "Sine_000",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 0,
+      "invalid_pixel_count": 0,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_010.png",
+      "size_bytes": 669644,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 11,
+      "label": "Sine_090",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 0,
+      "invalid_pixel_count": 0,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_011.png",
+      "size_bytes": 670132,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 12,
+      "label": "Sine_180",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 204800,
+      "invalid_pixel_count": 204800,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_012.png",
+      "size_bytes": 669003,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    },
+    {
+      "angle_deg": 0,
+      "pattern_id": 13,
+      "label": "Sine_270",
+      "algorithm": "longest_unsaturated_radiance_normalized",
+      "output_bit_depth": 16,
+      "saturated_threshold": 250,
+      "dark_threshold": 5,
+      "black_offsets": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "saturated_pixel_count": 0,
+      "dark_pixel_count": 0,
+      "invalid_pixel_count": 0,
+      "input_dtype": "uint8",
+      "input_shape": [
+        800,
+        1280
+      ],
+      "bracket_priority": [
+        "short",
+        "mid",
+        "long"
+      ],
+      "filename": "pattern_013.png",
+      "size_bytes": 670133,
+      "saturated_mask_filename": "",
+      "saturated_mask_size_bytes": 0,
+      "dark_mask_filename": "",
+      "dark_mask_size_bytes": 0
+    }
+  ]
+}

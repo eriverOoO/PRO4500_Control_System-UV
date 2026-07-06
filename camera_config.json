@@ -23,9 +23,10 @@
   "capture": {
     "hdr": {
       "enabled": true,
-      "output_bit_depth": 8,
+      "output_bit_depth": 16,
       "saturated_threshold": 250,
       "dark_threshold": 5,
+      "black_offset": 0.0,
       "brackets": [
         {
           "name": "short",

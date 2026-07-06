@@ -101,6 +101,7 @@ class HdrConfig:
     output_bit_depth: int
     saturated_threshold: int
     dark_threshold: int
+    black_offset: float
     brackets: tuple[ExposureBracket, ...]
 
 
@@ -353,7 +354,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     if not brackets:
         brackets = list(default_hdr_brackets(args))
 
-    output_bit_depth = int(hdr_section.get("output_bit_depth", 8))
+    output_bit_depth = int(hdr_section.get("output_bit_depth", 16))
     if output_bit_depth not in {8, 16}:
         raise SystemExit("capture.hdr.output_bit_depth must be 8 or 16")
 
@@ -383,6 +384,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             output_bit_depth=output_bit_depth,
             saturated_threshold=int(hdr_section.get("saturated_threshold", 250)),
             dark_threshold=int(hdr_section.get("dark_threshold", 5)),
+            black_offset=float(hdr_section.get("black_offset", 0.0)),
             brackets=tuple(brackets),
         ),
         rig=RigMetadata(
@@ -660,7 +662,13 @@ def synthesize_frame(cv2, pattern: Any, bracket: ExposureBracket, hdr: HdrConfig
     return simulated.astype(gray.dtype)
 
 
-def merge_hdr_frames(cv2, frames: list[Any], brackets: tuple[ExposureBracket, ...], hdr: HdrConfig) -> tuple[Any, Any, Any, dict[str, Any]]:
+def merge_hdr_frames(
+    cv2,
+    frames: list[Any],
+    brackets: tuple[ExposureBracket, ...],
+    hdr: HdrConfig,
+    black_offsets: list[float] | None = None,
+) -> tuple[Any, Any, Any, dict[str, Any]]:
     import numpy as np  # type: ignore
 
     if not frames:
@@ -676,18 +684,27 @@ def merge_hdr_frames(cv2, frames: list[Any], brackets: tuple[ExposureBracket, ..
     sensor_max = dtype_max(gray_frames[0])
     saturated_threshold = min(sensor_max, scale_threshold(hdr.saturated_threshold, sensor_max))
     dark_threshold = min(sensor_max, scale_threshold(hdr.dark_threshold, sensor_max))
+    if black_offsets is None:
+        black_offsets = [hdr.black_offset] * len(frames)
+    if len(black_offsets) != len(frames):
+        raise RuntimeError("HDR black offset count does not match bracket frame count")
+    offset_values = np.array(black_offsets, dtype=np.float32)[:, None, None]
+    corrected_stack = np.maximum(stack.astype(np.float32) - offset_values, 0.0)
 
     scales = np.array([bracket.exposure_gain_scale for bracket in brackets], dtype=np.float32)
     priority = np.argsort(scales)
     chosen = np.full(first_shape, int(priority[0]), dtype=np.int32)
+    any_valid = np.zeros(first_shape, dtype=bool)
     for index in priority:
-        valid = stack[index] < saturated_threshold
+        valid = (corrected_stack[index] > dark_threshold) & (stack[index] < saturated_threshold)
         chosen[valid] = int(index)
+        any_valid |= valid
 
-    selected = np.take_along_axis(stack, chosen[None, :, :], axis=0)[0].astype(np.float32)
+    selected = np.take_along_axis(corrected_stack, chosen[None, :, :], axis=0)[0]
     selected_scales = scales[chosen]
     max_scale = float(scales.max())
     normalized = selected / np.maximum(selected_scales, 1.0) * max_scale
+    normalized[~any_valid] = 0.0
     normalized = np.clip(normalized, 0, sensor_max)
 
     output_max = 65535 if hdr.output_bit_depth == 16 else 255
@@ -695,15 +712,17 @@ def merge_hdr_frames(cv2, frames: list[Any], brackets: tuple[ExposureBracket, ..
     merged = np.clip(normalized * (output_max / max(1, sensor_max)), 0, output_max).astype(output_dtype)
 
     saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
-    dark_mask = np.all(stack <= dark_threshold, axis=0).astype(np.uint8) * 255
+    dark_mask = np.all(corrected_stack <= dark_threshold, axis=0).astype(np.uint8) * 255
 
     report = {
         "algorithm": "longest_unsaturated_radiance_normalized",
         "output_bit_depth": hdr.output_bit_depth,
         "saturated_threshold": int(saturated_threshold),
         "dark_threshold": int(dark_threshold),
+        "black_offsets": [float(value) for value in black_offsets],
         "saturated_pixel_count": int(np.count_nonzero(saturated_mask)),
         "dark_pixel_count": int(np.count_nonzero(dark_mask)),
+        "invalid_pixel_count": int(np.size(any_valid) - np.count_nonzero(any_valid)),
         "input_dtype": str(gray_frames[0].dtype),
         "input_shape": [int(first_shape[0]), int(first_shape[1])],
         "bracket_priority": [brackets[int(index)].name for index in priority],
@@ -739,6 +758,7 @@ def run_scan(args: argparse.Namespace) -> int:
             output_bit_depth=hdr.output_bit_depth,
             saturated_threshold=hdr.saturated_threshold,
             dark_threshold=hdr.dark_threshold,
+            black_offset=hdr.black_offset,
             brackets=(ExposureBracket("single", int(args.exposure_us or 10000), float(args.gain_db or 0.0)),),
         )
 
@@ -815,6 +835,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 time.sleep(args.settle_ms / 1000.0)
 
                 bracket_frames: list[Any] = []
+                bracket_black_offsets: list[float] = []
                 bracket_entries: list[dict[str, Any]] = []
                 last_error = ""
 
@@ -887,12 +908,15 @@ def run_scan(args: argparse.Namespace) -> int:
                             )
                             scan_rows.append(row)
                             bracket_frames.append(frame.image)
+                            black_offset = float(frame.metadata.get("black_level", hdr.black_offset))
+                            bracket_black_offsets.append(black_offset)
                             bracket_entries.append(
                                 {
                                     "name": bracket.name,
                                     "filename": filename,
                                     "exposure_us": bracket.exposure_us,
                                     "gain_db": bracket.gain_db,
+                                    "black_offset": black_offset,
                                     "capture_timestamp_pc_ms": command_ts,
                                     "camera_timestamp_ms": frame.timestamp_ms,
                                     "camera_frame_index": frame.frame_index,
@@ -938,6 +962,7 @@ def run_scan(args: argparse.Namespace) -> int:
                     bracket_frames,
                     hdr.brackets,
                     hdr,
+                    bracket_black_offsets,
                 )
                 final_path = angle_dir / final_pattern_filename(spec.pattern_id)
                 final_size = write_image(cv2, final_path, merged)
