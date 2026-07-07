@@ -5,6 +5,17 @@ XIMEA UV 카메라를 xiAPI로 사용하는 구조광 캡처 컨트롤러를 포
 이전의 네트워크/모바일 카메라 기반 캡처 경로는 이 프로젝트에서 사용하지
 않습니다.
 
+## 출처 및 공통 모듈
+
+이 작업 공간의 초기 PRO4500/LightCrafter 4500 제어 뼈대는
+[lee-lab-skku/PRO4500_Control_System](https://github.com/lee-lab-skku/PRO4500_Control_System)을
+바탕으로 확장되었습니다.
+
+두 작업 공간에서 공통으로 사용하는 LightCrafter 4500/DLPC350 라이트엔진
+제어 코드는 [eriverOoO/PRO4500_CONTROL](https://github.com/eriverOoO/PRO4500_CONTROL)
+저장소로 분리했고, 이 저장소에서는 `GUI/` 경로의 Git submodule로 참조합니다.
+XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 남겨 둡니다.
+
 ## 주요 기능
 
 - USB HID를 통한 LightCrafter 4500 Blue LED 밝기 제어.
