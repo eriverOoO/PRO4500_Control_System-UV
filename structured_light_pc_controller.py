@@ -1162,6 +1162,58 @@ def run_scan(args: argparse.Namespace) -> int:
     return 1 if aborted else 0
 
 
+def run_project_only(args: argparse.Namespace) -> int:
+    cv2 = import_cv2()
+    pattern_dir = args.patterns.resolve()
+    patterns = load_pattern_specs(pattern_dir, legacy_14_patterns=args.legacy_14_patterns)
+    first_image = pattern_image(cv2, patterns[0])
+    repeat = max(1, int(args.project_repeat))
+    display: PatternDisplay | None = None
+    aborted = False
+
+    print(
+        f"[project] pattern_dir={pattern_dir} patterns={len(patterns)} repeat={repeat}",
+        flush=True,
+    )
+
+    try:
+        if args.no_display or args.dry_run:
+            print("[project] display disabled; validating pattern load only", flush=True)
+            return 0
+
+        display = PatternDisplay(args, first_image)
+        display.open(cv2)
+        display.black(cv2)
+        time.sleep(args.pre_black_ms / 1000.0)
+
+        for repeat_index in range(repeat):
+            print(f"[project] repeat {repeat_index + 1}/{repeat}", flush=True)
+            for spec in patterns:
+                projected = pattern_image(cv2, spec)
+                display.show(cv2, projected)
+                print(
+                    f"[project] pattern={spec.pattern_id:03d} {spec.label} "
+                    f"source={spec.source_path.name}",
+                    flush=True,
+                )
+                time.sleep(args.settle_ms / 1000.0)
+
+        print("[project] complete", flush=True)
+    except KeyboardInterrupt:
+        aborted = True
+        print("[project] Interrupted by user", flush=True)
+    except Exception as exc:
+        aborted = True
+        print(f"[project] ERROR: {exc}", flush=True)
+    finally:
+        if display is not None:
+            display.black(cv2)
+            time.sleep(args.finish_black_ms / 1000.0)
+            display.close(cv2)
+
+    return 1 if aborted else 0
+
+
 def run_preview(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
     camera: CameraInterface | None = None
@@ -1377,6 +1429,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-format", default=".png", type=normalize_suffix)
 
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument("--project-only", action="store_true")
+    parser.add_argument("--project-repeat", default=1, type=int)
     parser.add_argument("--single-capture", action="store_true")
     parser.add_argument("--continuous-capture", nargs="?", const=0, type=int)
     parser.add_argument("--check-camera", action="store_true")
@@ -1390,6 +1444,8 @@ def main() -> int:
     args = parse_args()
     if args.check_camera:
         return run_check_camera(args)
+    if args.project_only:
+        return run_project_only(args)
     if args.preview:
         return run_preview(args)
     if args.single_capture:

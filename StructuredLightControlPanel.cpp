@@ -55,10 +55,12 @@ enum ControlId {
     IDC_STRETCH,
     IDC_PAUSE_FIRST,
     IDC_SAVE_ALL_IMAGES,
+    IDC_PROJECT_REPEAT,
     IDC_LOG,
     IDC_START,
     IDC_STOP,
     IDC_PREVIEW,
+    IDC_PROJECT_ONLY,
     IDC_SINGLE_CAPTURE,
     IDC_CONTINUOUS_CAPTURE,
     IDC_NEXT_ANGLE,
@@ -74,6 +76,7 @@ enum ControlId {
 enum class JobMode {
     Scan,
     Preview,
+    ProjectOnly,
     SingleCapture,
     ContinuousCapture,
 };
@@ -105,10 +108,12 @@ struct AppState {
     HWND stretch{};
     HWND pauseFirst{};
     HWND saveAllImages{};
+    HWND projectRepeat{};
     HWND log{};
     HWND start{};
     HWND stop{};
     HWND preview{};
+    HWND projectOnly{};
     HWND singleCapture{};
     HWND continuousCapture{};
     HWND nextAngle{};
@@ -276,11 +281,16 @@ void handle_job_log(const std::wstring& text) {
     if (text.find(L"[camera] opened") != std::wstring::npos) {
         set_status(L"Camera Ready");
     }
-    if (text.find(L"[camera] ERROR") != std::wstring::npos || text.find(L"[scan] ERROR") != std::wstring::npos) {
+    if (text.find(L"[camera] ERROR") != std::wstring::npos
+        || text.find(L"[scan] ERROR") != std::wstring::npos
+        || text.find(L"[project] ERROR") != std::wstring::npos) {
         set_status(L"Failed");
     }
     if (text.find(L"[capture] saved") != std::wstring::npos) {
         set_status(L"Capturing");
+    }
+    if (text.find(L"[project] pattern=") != std::wstring::npos) {
+        set_status(L"Projecting");
     }
 }
 
@@ -422,6 +432,9 @@ std::wstring build_controller_command(JobMode mode) {
 
     if (mode == JobMode::Preview) {
         cmd << L" --preview";
+    } else if (mode == JobMode::ProjectOnly) {
+        cmd << L" --project-only"
+            << L" --project-repeat " << quote(get_text(g_app.projectRepeat));
     } else if (mode == JobMode::SingleCapture) {
         cmd << L" --single-capture";
     } else if (mode == JobMode::ContinuousCapture) {
@@ -434,9 +447,11 @@ std::wstring build_controller_command(JobMode mode) {
 void set_job_buttons(bool running) {
     EnableWindow(g_app.start, !running);
     EnableWindow(g_app.preview, !running);
+    EnableWindow(g_app.projectOnly, !running);
     EnableWindow(g_app.singleCapture, !running);
     EnableWindow(g_app.continuousCapture, !running);
     EnableWindow(g_app.saveAllImages, !running);
+    EnableWindow(g_app.projectRepeat, !running);
     EnableWindow(g_app.stop, running);
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
 }
@@ -465,7 +480,7 @@ void start_job(JobMode mode, const std::wstring& label) {
         MessageBoxW(g_app.window, L"structured_light_pc_controller.py was not found.", L"Missing Controller", MB_ICONERROR);
         return;
     }
-    if (mode == JobMode::Scan && !dir_exists(get_text(g_app.patterns))) {
+    if ((mode == JobMode::Scan || mode == JobMode::ProjectOnly) && !dir_exists(get_text(g_app.patterns))) {
         MessageBoxW(g_app.window, L"Pattern folder does not exist.", L"Missing Patterns", MB_ICONERROR);
         return;
     }
@@ -605,23 +620,28 @@ void build_ui(HWND hwnd) {
     g_app.stretch = make_checkbox(hwnd, IDC_STRETCH, L"Stretch patterns", 205, y, 140, 24, false);
     g_app.pauseFirst = make_checkbox(hwnd, IDC_PAUSE_FIRST, L"Pause before first angle", 370, y, 190, 24, false);
     g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, false);
+    make_label(hwnd, L"Project repeat", 705, y + 4, 95, 22);
+    g_app.projectRepeat = make_edit(hwnd, IDC_PROJECT_REPEAT, L"1", 805, y, 50, 24);
 
     y += 42;
     g_app.start = make_button(hwnd, IDC_START, L"Start Scan", margin, y, 115, 32);
-    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Preview", 142, y, 95, 32);
-    g_app.singleCapture = make_button(hwnd, IDC_SINGLE_CAPTURE, L"Single Capture", 250, y, 120, 32);
-    g_app.continuousCapture = make_button(hwnd, IDC_CONTINUOUS_CAPTURE, L"Continuous", 385, y, 115, 32);
-    g_app.stop = make_button(hwnd, IDC_STOP, L"Stop", 515, y, 80, 32);
+    g_app.projectOnly = make_button(hwnd, IDC_PROJECT_ONLY, L"Project Only", 142, y, 115, 32);
+    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Preview", 270, y, 95, 32);
+    g_app.singleCapture = make_button(hwnd, IDC_SINGLE_CAPTURE, L"Single Capture", 378, y, 120, 32);
+    g_app.continuousCapture = make_button(hwnd, IDC_CONTINUOUS_CAPTURE, L"Continuous", 513, y, 115, 32);
+    g_app.stop = make_button(hwnd, IDC_STOP, L"Stop", 643, y, 80, 32);
     EnableWindow(g_app.stop, FALSE);
-    g_app.nextAngle = make_button(hwnd, IDC_NEXT_ANGLE, L"Next Angle", 610, y, 115, 32);
+
+    y += 38;
+    g_app.nextAngle = make_button(hwnd, IDC_NEXT_ANGLE, L"Next Angle", margin, y, 115, 32);
     EnableWindow(g_app.nextAngle, FALSE);
-    make_button(hwnd, IDC_OPEN_OUTPUT, L"Open Output Folder", 740, y, 160, 32);
+    make_button(hwnd, IDC_OPEN_OUTPUT, L"Open Output Folder", 142, y, 160, 32);
 
     y += 48;
     g_app.log = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-        margin, y, 912, 390, hwnd, reinterpret_cast<HMENU>(IDC_LOG), g_app.instance, nullptr);
+        margin, y, 912, 350, hwnd, reinterpret_cast<HMENU>(IDC_LOG), g_app.instance, nullptr);
     SendMessageW(g_app.log, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 }
 
@@ -645,6 +665,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             return 0;
         case IDC_PREVIEW:
             start_job(JobMode::Preview, L"preview");
+            return 0;
+        case IDC_PROJECT_ONLY:
+            start_job(JobMode::ProjectOnly, L"project only");
             return 0;
         case IDC_SINGLE_CAPTURE:
             start_job(JobMode::SingleCapture, L"single capture");
