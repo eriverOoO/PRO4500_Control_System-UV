@@ -336,6 +336,51 @@ def default_hdr_brackets(args: argparse.Namespace) -> tuple[ExposureBracket, ...
     )
 
 
+def bracket_overrides(args: argparse.Namespace) -> dict[str, tuple[int | None, float | None]]:
+    return {
+        "short": (args.short_exposure_us, args.short_gain_db),
+        "mid": (args.mid_exposure_us, args.mid_gain_db),
+        "long": (args.long_exposure_us, args.long_gain_db),
+    }
+
+
+def apply_bracket_overrides(
+    brackets: list[ExposureBracket],
+    overrides: dict[str, tuple[int | None, float | None]],
+) -> list[ExposureBracket]:
+    updated: list[ExposureBracket] = []
+    seen: set[str] = set()
+    for bracket in brackets:
+        key = bracket.name.lower()
+        exposure_override, gain_override = overrides.get(key, (None, None))
+        seen.add(key)
+        updated.append(
+            ExposureBracket(
+                name=bracket.name,
+                exposure_us=max(1, int(exposure_override if exposure_override is not None else bracket.exposure_us)),
+                gain_db=float(gain_override if gain_override is not None else bracket.gain_db),
+            )
+        )
+
+    for name in ("short", "mid", "long"):
+        exposure_override, gain_override = overrides[name]
+        if name in seen or (exposure_override is None and gain_override is None):
+            continue
+        default_exposure = int(args_default_exposures()[name])
+        updated.append(
+            ExposureBracket(
+                name=name,
+                exposure_us=max(1, int(exposure_override if exposure_override is not None else default_exposure)),
+                gain_db=float(gain_override if gain_override is not None else 0.0),
+            )
+        )
+    return updated
+
+
+def args_default_exposures() -> dict[str, int]:
+    return {"short": 2500, "mid": 10000, "long": 40000}
+
+
 def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     config = read_json_file(args.camera_config)
     capture_section = config.get("capture", {})
@@ -353,6 +398,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
         brackets.append(ExposureBracket(name=name, exposure_us=max(1, exposure_us), gain_db=gain_db))
     if not brackets:
         brackets = list(default_hdr_brackets(args))
+    brackets = apply_bracket_overrides(brackets, bracket_overrides(args))
 
     output_bit_depth = int(hdr_section.get("output_bit_depth", 16))
     if output_bit_depth not in {8, 16}:
@@ -783,6 +829,14 @@ def run_scan(args: argparse.Namespace) -> int:
     print(
         f"[scan] scan_id={scan_id} scan_type={capture_config.rig.scan_type} "
         f"patterns={len(patterns)} angles={angles} brackets={len(hdr.brackets)}",
+        flush=True,
+    )
+    print(
+        "[scan] hdr brackets="
+        + ", ".join(
+            f"{bracket.name}:{bracket.exposure_us}us/{bracket.gain_db:g}dB"
+            for bracket in hdr.brackets
+        ),
         flush=True,
     )
 
@@ -1307,6 +1361,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-device-index", type=int)
     parser.add_argument("--exposure-us", type=int)
     parser.add_argument("--gain-db", type=float)
+    parser.add_argument("--short-exposure-us", type=int)
+    parser.add_argument("--short-gain-db", type=float)
+    parser.add_argument("--mid-exposure-us", type=int)
+    parser.add_argument("--mid-gain-db", type=float)
+    parser.add_argument("--long-exposure-us", type=int)
+    parser.add_argument("--long-gain-db", type=float)
     parser.add_argument("--fps", type=float)
     parser.add_argument(
         "--trigger-mode",
