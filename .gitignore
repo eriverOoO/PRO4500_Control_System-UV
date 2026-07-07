@@ -20,6 +20,7 @@ build/
 .runtime/
 .toolchains/
 captures/
+generated_patterns/
 
 # Local environment and secrets
 .env
