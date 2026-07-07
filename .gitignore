@@ -11,6 +11,21 @@
 *.obj
 *.txt
 
+# Build outputs
+build/
+*.pdb
+*.ilk
+
+# Runtime/generated local artifacts
+.runtime/
+.toolchains/
+captures/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]
