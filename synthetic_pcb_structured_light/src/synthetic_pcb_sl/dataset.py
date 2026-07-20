@@ -81,6 +81,7 @@ def generate_dataset(
     angle: int | None = None,
     pattern_index: int | None = None,
     assets_dir: Path | None = None,
+    flat_reference: bool = False,
 ) -> dict[str, Any]:
     """Generate all 44 images or a deterministic requested subset."""
 
@@ -99,6 +100,13 @@ def generate_dataset(
         _save_scene_assets(base_scene, project_assets, float(config["pcb"]["max_component_height_mm"]))
         # Render from the persisted representation so the first and later runs are identical.
         base_scene = create_scene(config, project_assets)
+    reference_geometry: PcbScene | None = None
+    if flat_reference:
+        # Keep the object scan's camera/projector coordinate scale while replacing
+        # the target itself with the uniform stage visible after the PCB is removed.
+        reference_geometry = base_scene.flattened()
+        stage_albedo = float(config.get("reference", {}).get("stage_albedo", 0.18))
+        base_scene = base_scene.empty_stage(stage_albedo)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(config_path, output_dir / "generation_config.yaml")
@@ -106,7 +114,11 @@ def generate_dataset(
     angle_records: dict[str, Any] = {}
     for angle_value in selected_angles:
         scene = base_scene if angle_value == 0 else base_scene.rotated_180()
-        context = prepare_context(scene, config)
+        if reference_geometry is None:
+            geometry_scene = scene
+        else:
+            geometry_scene = reference_geometry if angle_value == 0 else reference_geometry.rotated_180()
+        context = prepare_context(geometry_scene, config)
         angle_dir = output_dir / f"angle_{angle_value:03d}"
         angle_dir.mkdir(parents=True, exist_ok=True)
         _save_ground_truth(scene, output_dir, angle_value, config)
@@ -136,6 +148,7 @@ def generate_dataset(
     manifest = {
         "schema_version": 1,
         "generator": "synthetic_pcb_sl",
+        "scene_type": "empty_stage_reference" if flat_reference else "object",
         "seed": int(config["seed"]),
         "patterns_dir": str(patterns_dir.resolve()),
         "bit_depth": int(config["render"]["bit_depth"]),

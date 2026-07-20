@@ -22,6 +22,13 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--angle", type=int, choices=(0, 180))
     generate.add_argument("--pattern-index", type=int, choices=range(22))
     generate.add_argument("--bit-depth", type=int, choices=(8, 16))
+    generate.add_argument(
+        "--empty-stage-reference",
+        "--flat-reference",
+        dest="flat_reference",
+        action="store_true",
+        help="Render patterns on a uniform flat stage with the PCB removed.",
+    )
 
     validate = subparsers.add_parser("validate", help="Validate an existing complete dataset")
     validate.add_argument("--output-dir", type=Path, default=Path("output"))
@@ -47,7 +54,10 @@ def main() -> int:
         effective_assets = args.assets_dir or args.config.parent.parent / "assets"
         manifest = generate_dataset(
             args.patterns_dir, args.output_dir, config_path,
-            angle=args.angle, pattern_index=args.pattern_index, assets_dir=effective_assets,
+            angle=args.angle,
+            pattern_index=args.pattern_index,
+            assets_dir=effective_assets,
+            flat_reference=args.flat_reference,
         )
         if args.bit_depth is not None:
             temporary.unlink(missing_ok=True)

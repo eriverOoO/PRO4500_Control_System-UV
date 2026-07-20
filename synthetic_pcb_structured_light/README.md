@@ -32,6 +32,17 @@ Generate one angle or one frame:
 
 Use `--bit-depth 8` for 8-bit output. The renderer never applies auto-exposure, auto-gamma, frame-dependent focus, camera motion, or frame-dependent PCB material changes.
 
+Generate a reference scan of the uniform, flat stage with the PCB removed. The
+camera/projector coordinate system remains identical to the object scan:
+
+```powershell
+.\.venv\Scripts\python.exe -m synthetic_pcb_sl.cli generate --patterns-dir .\patterns --output-dir .\output\reference --config .\configs\default.yaml --empty-stage-reference
+```
+
+This writes decoder-ready `reference/angle_000` and `reference/angle_180` folders. Use the matching angle reference before 0/180 fusion; do not reuse an object absolute phase as its own reference.
+The reference frames contain only the projected patterns on a uniform matte stage;
+no PCB mask, PCB texture, pads, traces, or components are retained.
+
 ## Validate and preview
 
 ```powershell

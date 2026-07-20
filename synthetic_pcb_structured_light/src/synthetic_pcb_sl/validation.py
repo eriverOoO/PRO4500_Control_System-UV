@@ -43,7 +43,16 @@ def validate_dataset(output_dir: Path) -> dict[str, Any]:
         by_angle = {angle: [_normalized(read_png(output_dir / f"angle_{angle:03d}" / f"pattern_{i:03d}.png")) for i in range(22)] for angle in (0, 180)}
         valid_path = output_dir / "ground_truth" / "valid_mask.png"
         valid_0 = read_png(valid_path) > 0 if valid_path.is_file() else np.ones_like(by_angle[0][0], dtype=bool)
-        valid_masks = {0: valid_0, 180: np.rot90(valid_0, 2)}
+        surface_masks = {0: valid_0, 180: np.rot90(valid_0, 2)}
+        valid_masks = {
+            angle: surface_masks[angle] & ((frames[0] - frames[1]) > 0.02)
+            for angle, frames in by_angle.items()
+        }
+        check(
+            "projected_roi_is_nonempty",
+            all(float(mask.mean()) > 0.05 for mask in valid_masks.values()),
+            {str(angle): float(mask.mean()) for angle, mask in valid_masks.items()},
+        )
         white_black = all(float(frames[0].mean()) > float(frames[1].mean()) + 0.02 for frames in by_angle.values())
         check("white_brighter_than_black", white_black)
 

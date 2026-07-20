@@ -26,6 +26,9 @@ pcb:
   max_component_height_mm: 3.0
   frame_fill_ratio: 0.72
 
+reference:
+  stage_albedo: 0.18
+
 render:
   bit_depth: 16
   ambient: 0.03

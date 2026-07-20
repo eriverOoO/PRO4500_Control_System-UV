@@ -1,0 +1,28 @@
+{
+  "description": "Empirical phase-to-height calibration for the bundled synthetic dataset only.",
+  "phase_linear": {
+    "formula": "height_mm = (height_sign * (phi_object - phi_reference) - offset_phase) / phase_per_mm",
+    "phase_per_mm": 23.224349218827577,
+    "offset_phase": -0.011646521799748323,
+    "height_sign": -1.0
+  },
+  "phase": {
+    "convention": "swapped",
+    "direction": "normal",
+    "apply_half_period_correction": true,
+    "pattern_period_source_px": 5.0
+  },
+  "thresholds": {
+    "min_signal": 5.0,
+    "gray_pair_min_contrast": 0.05,
+    "modulation_threshold": 0.05
+  },
+  "provenance": {
+    "seed": 20260720,
+    "camera_size": [1936, 1216],
+    "object_manifest": "../output/manifest.json",
+    "reference_manifest": "../output/reference/manifest.json",
+    "reference_scene_type": "empty_stage_reference"
+  },
+  "warning": "Do not use these empirical values for a real camera/projector rig. Calibrate the real rig independently."
+}

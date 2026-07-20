@@ -49,3 +49,29 @@ def test_partial_cli_generation_layout(tmp_path: Path) -> None:
     assert image.shape == (200, 320)
     assert image.dtype == np.uint16
     assert manifest["frames"][0]["inverse"] is True
+
+
+def test_empty_stage_reference_removes_pcb_and_zeroes_geometry() -> None:
+    config = small_config()
+    scene = create_scene(config)
+    reference = scene.empty_stage(0.18)
+    assert np.allclose(reference.albedo, 0.18)
+    assert reference.mask.all()
+    assert np.count_nonzero(reference.height_mm) == 0
+    assert np.count_nonzero(reference.material) == 0
+    assert np.count_nonzero(reference.components) == 0
+
+
+def test_flat_reference_dataset_uses_empty_stage(tmp_path: Path) -> None:
+    config = small_config()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    manifest = generate_dataset(
+        PROJECT_ROOT / "patterns", tmp_path / "output", config_path,
+        angle=0, pattern_index=0, assets_dir=tmp_path / "assets", flat_reference=True,
+    )
+    assert manifest["scene_type"] == "empty_stage_reference"
+    valid_mask = read_png(tmp_path / "output" / "ground_truth" / "valid_mask.png")
+    albedo = read_png(tmp_path / "output" / "ground_truth" / "albedo.png")
+    assert np.all(valid_mask == 255)
+    assert int(albedo.min()) == int(albedo.max())

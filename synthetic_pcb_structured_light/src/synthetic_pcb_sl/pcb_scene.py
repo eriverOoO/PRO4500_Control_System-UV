@@ -25,6 +25,29 @@ class PcbScene:
             self.albedo, self.height_mm, self.mask, self.material, self.components
         )))
 
+    def flattened(self) -> "PcbScene":
+        """Return the same target and reflectance with every surface at 0 mm."""
+
+        return PcbScene(
+            albedo=self.albedo.copy(),
+            height_mm=np.zeros_like(self.height_mm, dtype=np.float32),
+            mask=self.mask.copy(),
+            material=self.material.copy(),
+            components=np.zeros_like(self.components, dtype=np.uint8),
+        )
+
+    def empty_stage(self, albedo: float) -> "PcbScene":
+        """Return a uniform, flat stage with no PCB or components present."""
+
+        shape = self.height_mm.shape
+        return PcbScene(
+            albedo=np.full(shape, albedo, dtype=np.float32),
+            height_mm=np.zeros(shape, dtype=np.float32),
+            mask=np.ones(shape, dtype=bool),
+            material=np.zeros(shape, dtype=np.uint8),
+            components=np.zeros(shape, dtype=np.uint8),
+        )
+
 
 def _rectangle(array: np.ndarray, center: tuple[int, int], size: tuple[int, int], value: Any) -> None:
     cx, cy = center
