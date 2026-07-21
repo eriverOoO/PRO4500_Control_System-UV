@@ -3,7 +3,7 @@
 
 #include <string>
 
-// Description of the most recent DLPC350_USB_Open() attempt.
+// Description of the most recent USB initialization, open, read, or write failure.
 const std::wstring& DLPC350_USB_LastError();
 
 #endif

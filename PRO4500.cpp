@@ -16,6 +16,7 @@
 #include "GUI/dlpc350_common.h"
 #include "GUI/dlpc350_api.h"
 #include "GUI/dlpc350_usb.h"
+#include "projector_usb_diagnostics.h"
 
 namespace fs = std::filesystem;
 using namespace Gdiplus;
@@ -85,12 +86,16 @@ void set_status(const std::wstring& text) {
 
 bool connect_projector(std::wstring& error) {
     if (DLPC350_USB_Init() != 0) {
-        error = L"HIDAPI 초기화 실패";
+        error = DLPC350_USB_LastError();
+        if (error.empty()) error = L"HIDAPI initialization failed";
         return false;
     }
     if (DLPC350_USB_Open() != 0) {
+        error = DLPC350_USB_LastError();
         DLPC350_USB_Exit();
-        error = L"LightCrafter 4500을 찾을 수 없습니다 (VID 0451, PID 6401)";
+        if (error.empty()) {
+            error = L"LightCrafter 4500 not found or cannot be opened (VID 0451, PID 6401)";
+        }
         return false;
     }
     return true;
@@ -103,22 +108,32 @@ void disconnect_projector() {
 
 bool set_blue_led(int brightness, std::wstring& error) {
     std::lock_guard<std::mutex> lock(g_usbMutex);
-    if (!connect_projector(error)) {
-        return false;
-    }
-
     // TI LightCrafter 4500 reference GUI uses inverted LED-current values:
     // register 255 = minimum, register 0 = maximum.
     const unsigned char current = static_cast<unsigned char>(255 - std::clamp(brightness, 0, 255));
-    const int enableResult = DLPC350_SetLedEnables(false, false, false, brightness > 0);
-    const int currentResult = DLPC350_SetLedCurrents(255, 255, current);
-    disconnect_projector();
+    constexpr int commandAttempts = 2;
+    for (int attempt = 1; attempt <= commandAttempts; ++attempt) {
+        if (!connect_projector(error)) {
+            return false;
+        }
 
-    if (enableResult < 0 || currentResult < 0) {
-        error = L"Blue LED 명령 전송 실패";
-        return false;
+        const int enableResult = DLPC350_SetLedEnables(false, false, false, brightness > 0);
+        const int currentResult = enableResult < 0
+            ? -1
+            : DLPC350_SetLedCurrents(255, 255, current);
+        std::wstring usbError = DLPC350_USB_LastError();
+        disconnect_projector();
+
+        if (enableResult >= 0 && currentResult >= 0) {
+            return true;
+        }
+        error = usbError.empty() ? L"Blue LED command failed" : usbError;
+        if (attempt < commandAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
     }
-    return true;
+    error += L" The LED command was retried after reopening the USB device.";
+    return false;
 }
 
 BOOL CALLBACK collect_monitor(HMONITOR, HDC, LPRECT rect, LPARAM data) {

@@ -212,7 +212,8 @@ void set_status(const std::wstring& value) {
 
 bool connect_projector(std::wstring& error) {
     if (DLPC350_USB_Init() != 0) {
-        error = L"HIDAPI init failed";
+        error = DLPC350_USB_LastError();
+        if (error.empty()) error = L"HIDAPI initialization failed";
         return false;
     }
     if (DLPC350_USB_Open() != 0) {
@@ -233,20 +234,30 @@ void disconnect_projector() {
 
 bool set_blue_led(int brightness, std::wstring& error) {
     std::lock_guard<std::mutex> lock(g_usbMutex);
-    if (!connect_projector(error)) {
-        return false;
-    }
-
     const unsigned char current = static_cast<unsigned char>(255 - std::clamp(brightness, 0, 255));
-    const int enableResult = DLPC350_SetLedEnables(false, false, false, brightness > 0);
-    const int currentResult = DLPC350_SetLedCurrents(255, 255, current);
-    disconnect_projector();
+    constexpr int commandAttempts = 2;
+    for (int attempt = 1; attempt <= commandAttempts; ++attempt) {
+        if (!connect_projector(error)) {
+            return false;
+        }
 
-    if (enableResult < 0 || currentResult < 0) {
-        error = L"Blue LED command failed";
-        return false;
+        const int enableResult = DLPC350_SetLedEnables(false, false, false, brightness > 0);
+        const int currentResult = enableResult < 0
+            ? -1
+            : DLPC350_SetLedCurrents(255, 255, current);
+        std::wstring usbError = DLPC350_USB_LastError();
+        disconnect_projector();
+
+        if (enableResult >= 0 && currentResult >= 0) {
+            return true;
+        }
+        error = usbError.empty() ? L"Blue LED command failed" : usbError;
+        if (attempt < commandAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
     }
-    return true;
+    error += L" The LED command was retried after reopening the USB device.";
+    return false;
 }
 
 void update_led_value_label() {
