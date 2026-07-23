@@ -580,7 +580,14 @@ void build_ui(HWND hwnd) {
 
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
-    g_app.patterns = make_edit(hwnd, IDC_PATTERNS, path_join(g_app.root, L"generated_patterns"), 110, y, 700, 24);
+    g_app.patterns = make_edit(
+        hwnd,
+        IDC_PATTERNS,
+        path_join(g_app.root, L"generated_patterns_centered"),
+        110,
+        y,
+        700,
+        24);
     make_button(hwnd, IDC_BROWSE_PATTERNS, L"Browse", 825, y, 100, 24);
 
     y += 32;

@@ -65,6 +65,27 @@ struct ProjectionWindowData {
     std::unique_ptr<Image> image;
 };
 
+std::wstring get_exe_dir() {
+    std::vector<wchar_t> buffer(MAX_PATH);
+    DWORD length = GetModuleFileNameW(
+        nullptr,
+        buffer.data(),
+        static_cast<DWORD>(buffer.size()));
+    while (length == buffer.size()) {
+        buffer.resize(buffer.size() * 2);
+        length = GetModuleFileNameW(
+            nullptr,
+            buffer.data(),
+            static_cast<DWORD>(buffer.size()));
+    }
+    const fs::path executable(std::wstring(buffer.data(), length));
+    return executable.parent_path().wstring();
+}
+
+std::wstring path_join(const std::wstring& base, const std::wstring& child) {
+    return (fs::path(base) / child).wstring();
+}
+
 std::wstring window_text(HWND control) {
     const int length = GetWindowTextLengthW(control);
     std::wstring text(static_cast<size_t>(length), L'\0');
@@ -340,8 +361,16 @@ LRESULT CALLBACK main_proc(HWND window, UINT message, WPARAM wParam, LPARAM lPar
                             250, 55, 145, 32, IDC_LED_OFF));
 
         setFont(add_control(window, L"STATIC", L"Pattern folder", 0, 18, 108, 95, 24));
-        setFont(add_control(window, L"EDIT", L".\\patterns", WS_BORDER | ES_AUTOHSCROLL,
-                            115, 105, 335, 25, IDC_FOLDER));
+        setFont(add_control(
+            window,
+            L"EDIT",
+            path_join(get_exe_dir(), L"generated_patterns_centered").c_str(),
+            WS_BORDER | ES_AUTOHSCROLL,
+            115,
+            105,
+            335,
+            25,
+            IDC_FOLDER));
 
         setFont(add_control(window, L"STATIC", L"Exposure (ms)", 0, 18, 145, 95, 24));
         setFont(add_control(window, L"EDIT", L"1000", WS_BORDER | ES_NUMBER,

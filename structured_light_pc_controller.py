@@ -205,6 +205,17 @@ def load_pattern_specs(pattern_dir: Path, *, legacy_14_patterns: bool) -> list[P
     for pattern_id in capture_order:
         label = PATTERN_LABELS[pattern_id]
         if pattern_id >= 14:
+            explicit_inverse_path = files_by_id.get(pattern_id)
+            if explicit_inverse_path is not None:
+                specs.append(
+                    PatternSpec(
+                        pattern_id=pattern_id,
+                        label=label,
+                        source_path=explicit_inverse_path,
+                    )
+                )
+                continue
+
             normal_id = pattern_id - 12
             source_path = files_by_id.get(normal_id)
             if source_path is not None:
@@ -1368,7 +1379,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Display structured-light patterns and capture XIMEA UV camera frames."
     )
-    parser.add_argument("--patterns", default="generated_patterns", type=Path)
+    parser.add_argument("--patterns", default="generated_patterns_centered", type=Path)
     parser.add_argument("--output", default="captures", type=Path)
     parser.add_argument("--monitor", default=1, type=int)
     parser.add_argument("--window-name", default="StructuredLight Projection")

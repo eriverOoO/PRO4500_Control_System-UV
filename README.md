@@ -51,7 +51,16 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
 - `prepare_pc_python_env.ps1`: `.venv-pc` 생성 및 Python 패키지 설치.
 - `build.bat` / `PRO4500.cpp`: 기존의 간단한 PRO4500 투사/LED 유틸리티.
 - `GUI/`: 빌드에 사용되는 TI LightCrafter 4500 API와 HIDAPI 소스.
-- `generated_patterns/`: mock 테스트와 스캔 테스트용 샘플 패턴 이미지.
+- `generate_centered_patterns.ps1`: 원본 패턴을 중앙 10% 크기로 축소하고
+  나머지를 검정으로 채우는 생성 스크립트.
+- `generated_patterns_centered/`: 화면 해상도는 유지하고 중앙 10% 영역에만
+  표시되는 0..21번 패턴 이미지.
+
+중앙 패턴 폴더를 다시 생성하려면 다음 명령을 실행합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\generate_centered_patterns.ps1
+```
 
 ## XIMEA SDK 요구 사항
 
@@ -207,13 +216,13 @@ XIMEA 실시간 미리보기:
 XIMEA 구조광 스캔:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns --output .\captures --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --angles 0
 ```
 
 하드웨어 없이 합성 데이터로 디코더 폴더를 시험:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --patterns .\generated_patterns --output .\captures --scan-type reference --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0
 ```
 
 기준/물체 메타데이터 예시:
@@ -226,13 +235,13 @@ XIMEA 구조광 스캔:
 기존 도구용 14패턴 레거시 스캔:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --legacy-14-patterns --patterns .\generated_patterns --output .\captures --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --legacy-14-patterns --patterns .\generated_patterns_centered --output .\captures --angles 0
 ```
 
 Mock 카메라 투사/로그 테스트:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider mock --patterns .\generated_patterns --output .\captures --angles 0 --windowed
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider mock --patterns .\generated_patterns_centered --output .\captures --angles 0 --windowed
 ```
 
 ## 출력
@@ -287,7 +296,7 @@ images.
 CLI equivalent:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns --output .\captures --scan-type reference --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0
 ```
 
 ## Attribution
