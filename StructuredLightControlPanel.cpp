@@ -29,6 +29,7 @@ namespace {
 constexpr wchar_t kAppClass[] = L"StructuredLightControlPanelWindow";
 constexpr UINT WM_APP_LOG = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
+constexpr UINT WM_APP_PATTERN_DONE = WM_APP + 3;
 
 enum ControlId {
     IDC_STATUS = 100,
@@ -126,8 +127,10 @@ struct AppState {
     HWND applyLed{};
     HWND ledOff{};
     PROCESS_INFORMATION jobProcess{};
+    PROCESS_INFORMATION patternUpdateProcess{};
     HANDLE jobPipeRead = nullptr;
     std::atomic_bool jobRunning{false};
+    std::atomic_bool patternUpdateRunning{false};
     std::wstring root;
     std::wstring angleAdvanceFile;
     std::wstring jobLabel;
@@ -467,10 +470,13 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.continuousCapture, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
-    EnableWindow(g_app.patternScale, !running);
-    EnableWindow(g_app.applyPatternScale, !running);
     EnableWindow(g_app.stop, running);
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
+}
+
+void set_pattern_update_controls(bool running) {
+    EnableWindow(g_app.patternScale, !running);
+    EnableWindow(g_app.applyPatternScale, !running);
 }
 
 void read_pipe_thread(HANDLE pipe) {
@@ -487,6 +493,13 @@ void wait_process_thread(HANDLE process) {
     DWORD exitCode = 0;
     GetExitCodeProcess(process, &exitCode);
     PostMessageW(g_app.window, WM_APP_DONE, exitCode, 0);
+}
+
+void wait_pattern_update_thread(HANDLE process) {
+    WaitForSingleObject(process, INFINITE);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(process, &exitCode);
+    PostMessageW(g_app.window, WM_APP_PATTERN_DONE, exitCode, 0);
 }
 
 bool launch_job_process(
@@ -543,6 +556,14 @@ bool launch_job_process(
 
 void start_job(JobMode mode, const std::wstring& label) {
     if (g_app.jobRunning.load()) return;
+    if (g_app.patternUpdateRunning.load()) {
+        MessageBoxW(
+            g_app.window,
+            L"Wait for the pattern size update to finish before starting projection or capture.",
+            L"Patterns Are Updating",
+            MB_ICONINFORMATION);
+        return;
+    }
 
     std::wstring controller = path_join(g_app.root, L"structured_light_pc_controller.py");
     if (!file_exists(controller)) {
@@ -564,8 +585,69 @@ void start_job(JobMode mode, const std::wstring& label) {
         L"Failed to start Python controller. Run prepare_pc_python_env.ps1 or install Python on PATH.");
 }
 
+bool launch_pattern_update_process(const std::wstring& command) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        MessageBoxW(g_app.window, L"Failed to create pattern generator output pipe.", L"Error", MB_ICONERROR);
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    ZeroMemory(&g_app.patternUpdateProcess, sizeof(g_app.patternUpdateProcess));
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+    BOOL ok = CreateProcessW(
+        nullptr,
+        mutableCommand.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        g_app.root.c_str(),
+        &si,
+        &g_app.patternUpdateProcess);
+    CloseHandle(writePipe);
+
+    if (!ok) {
+        CloseHandle(readPipe);
+        MessageBoxW(
+            g_app.window,
+            L"Failed to start the pattern generator with Windows PowerShell.",
+            L"Error",
+            MB_ICONERROR);
+        return false;
+    }
+
+    g_app.patternUpdateRunning.store(true);
+    set_pattern_update_controls(true);
+    set_status(L"Updating Patterns");
+    std::thread(read_pipe_thread, readPipe).detach();
+    std::thread(wait_pattern_update_thread, g_app.patternUpdateProcess.hProcess).detach();
+    return true;
+}
+
 void apply_pattern_size() {
-    if (g_app.jobRunning.load()) return;
+    if (g_app.patternUpdateRunning.load()) return;
+    if (g_app.jobRunning.load()) {
+        MessageBoxW(
+            g_app.window,
+            L"Stop the current projection or capture before changing pattern files.",
+            L"Projection Is Running",
+            MB_ICONINFORMATION);
+        return;
+    }
 
     std::wstring percentText = get_text(g_app.patternScale);
     int percent = 0;
@@ -631,11 +713,7 @@ void apply_pattern_size() {
         g_app.log,
         L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
             + L"% x " + std::to_wstring(percent) + L"% in " + output + L"\r\n");
-    launch_job_process(
-        command.str(),
-        L"pattern size update",
-        L"Updating Patterns",
-        L"Failed to start the pattern generator with Windows PowerShell.");
+    launch_pattern_update_process(command.str());
 }
 
 void stop_job() {
@@ -837,7 +915,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_APP_DONE: {
         DWORD exitCode = static_cast<DWORD>(wparam);
-        const bool patternSizeUpdate = g_app.jobLabel == L"pattern size update";
         if (g_app.jobProcess.hThread) CloseHandle(g_app.jobProcess.hThread);
         if (g_app.jobProcess.hProcess) CloseHandle(g_app.jobProcess.hProcess);
         ZeroMemory(&g_app.jobProcess, sizeof(g_app.jobProcess));
@@ -846,17 +923,30 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         std::wstringstream ss;
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
-        if (patternSizeUpdate) {
-            set_status(exitCode == 0 ? L"Patterns Updated" : L"Pattern Update Failed");
-        } else {
-            set_status(exitCode == 0 ? L"Finished" : L"Failed");
-        }
+        set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        return 0;
+    }
+    case WM_APP_PATTERN_DONE: {
+        DWORD exitCode = static_cast<DWORD>(wparam);
+        if (g_app.patternUpdateProcess.hThread) CloseHandle(g_app.patternUpdateProcess.hThread);
+        if (g_app.patternUpdateProcess.hProcess) CloseHandle(g_app.patternUpdateProcess.hProcess);
+        ZeroMemory(&g_app.patternUpdateProcess, sizeof(g_app.patternUpdateProcess));
+        g_app.patternUpdateRunning.store(false);
+        set_pattern_update_controls(false);
+        std::wstringstream ss;
+        ss << L"\r\n=== Pattern size update finished with exit code " << exitCode << L" ===\r\n";
+        append_log(g_app.log, ss.str());
+        set_status(exitCode == 0 ? L"Patterns Updated" : L"Pattern Update Failed");
         return 0;
     }
     case WM_CLOSE:
         if (g_app.jobRunning.load()) {
             if (MessageBoxW(hwnd, L"A job is running. Stop it and exit?", L"Exit", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
             TerminateProcess(g_app.jobProcess.hProcess, 130);
+        }
+        if (g_app.patternUpdateRunning.load()) {
+            if (MessageBoxW(hwnd, L"A pattern size update is running. Stop it and exit?", L"Exit", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+            TerminateProcess(g_app.patternUpdateProcess.hProcess, 130);
         }
         DestroyWindow(hwnd);
         return 0;

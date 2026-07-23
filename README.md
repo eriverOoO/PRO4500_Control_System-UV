@@ -67,7 +67,9 @@ powershell -ExecutionPolicy Bypass -File .\generate_centered_patterns.ps1
 GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 유지하면서 중앙
 50%×50% 영역에만 패턴을 배치하고 바깥을 검정으로 채웁니다. 14~21번 inverse
 패턴도 함께 다시 생성됩니다. 크기를 반복 변경해도 누적 축소되지 않도록 항상
-`generated_patterns1/`의 원본에서 다시 생성합니다.
+`generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Size`는 패턴 파일만
+변경하며 스캔이나 투사를 시작하지 않습니다. 상태가 `Patterns Updated`로 바뀐
+뒤 `Start Scan` 또는 `Project Only`를 별도로 실행합니다.
 
 ## XIMEA SDK 요구 사항
 
