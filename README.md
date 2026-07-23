@@ -289,3 +289,11 @@ CLI equivalent:
 ```powershell
 .\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns --output .\captures --scan-type reference --angles 0
 ```
+
+## Attribution
+
+Project-specific XIMEA UV camera integration and structured-light scan workflow
+were originally authored by [eriverOoO](https://github.com/eriverOoO).
+
+프로젝트별 XIMEA UV 카메라 연동 및 구조광 스캔 워크플로의 원저작자는
+[eriverOoO](https://github.com/eriverOoO)입니다.
