@@ -33,6 +33,8 @@ constexpr UINT WM_APP_DONE = WM_APP + 2;
 enum ControlId {
     IDC_STATUS = 100,
     IDC_PATTERNS,
+    IDC_PATTERN_SCALE,
+    IDC_APPLY_PATTERN_SCALE,
     IDC_OUTPUT,
     IDC_CAMERA_CONFIG,
     IDC_PROVIDER,
@@ -86,6 +88,8 @@ struct AppState {
     HWND window{};
     HWND status{};
     HWND patterns{};
+    HWND patternScale{};
+    HWND applyPatternScale{};
     HWND output{};
     HWND cameraConfig{};
     HWND provider{};
@@ -463,6 +467,8 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.continuousCapture, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
+    EnableWindow(g_app.patternScale, !running);
+    EnableWindow(g_app.applyPatternScale, !running);
     EnableWindow(g_app.stop, running);
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
 }
@@ -483,6 +489,58 @@ void wait_process_thread(HANDLE process) {
     PostMessageW(g_app.window, WM_APP_DONE, exitCode, 0);
 }
 
+bool launch_job_process(
+    const std::wstring& command,
+    const std::wstring& label,
+    const std::wstring& runningStatus,
+    const std::wstring& launchError) {
+    if (g_app.jobRunning.load()) return false;
+
+    g_app.jobLabel = label;
+    append_log(g_app.log, L"\r\n=== Started " + label + L" ===\r\n");
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        MessageBoxW(g_app.window, L"Failed to create output pipe.", L"Error", MB_ICONERROR);
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    ZeroMemory(&g_app.jobProcess, sizeof(g_app.jobProcess));
+    std::vector<wchar_t> mutableCmd(command.begin(), command.end());
+    mutableCmd.push_back(L'\0');
+
+    BOOL ok = CreateProcessW(
+        nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+        nullptr, g_app.root.c_str(), &si, &g_app.jobProcess);
+    CloseHandle(writePipe);
+
+    if (!ok) {
+        CloseHandle(readPipe);
+        MessageBoxW(g_app.window, launchError.c_str(), L"Error", MB_ICONERROR);
+        return false;
+    }
+
+    g_app.jobPipeRead = readPipe;
+    g_app.jobRunning.store(true);
+    set_job_buttons(true);
+    set_status(runningStatus);
+    std::thread(read_pipe_thread, readPipe).detach();
+    std::thread(wait_process_thread, g_app.jobProcess.hProcess).detach();
+    return true;
+}
+
 void start_job(JobMode mode, const std::wstring& label) {
     if (g_app.jobRunning.load()) return;
 
@@ -499,49 +557,85 @@ void start_job(JobMode mode, const std::wstring& label) {
     CreateDirectoryW(runtime_dir().c_str(), nullptr);
     g_app.angleAdvanceFile = angle_advance_file();
     DeleteFileW(g_app.angleAdvanceFile.c_str());
-    g_app.jobLabel = label;
-    append_log(g_app.log, L"\r\n=== Started " + label + L" ===\r\n");
+    launch_job_process(
+        build_controller_command(mode),
+        label,
+        L"Running",
+        L"Failed to start Python controller. Run prepare_pc_python_env.ps1 or install Python on PATH.");
+}
 
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    HANDLE readPipe = nullptr;
-    HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
-        MessageBoxW(g_app.window, L"Failed to create output pipe.", L"Error", MB_ICONERROR);
+void apply_pattern_size() {
+    if (g_app.jobRunning.load()) return;
+
+    std::wstring percentText = get_text(g_app.patternScale);
+    int percent = 0;
+    try {
+        size_t parsed = 0;
+        percent = std::stoi(percentText, &parsed);
+        if (parsed != percentText.size()) throw std::invalid_argument("trailing text");
+    } catch (...) {
+        MessageBoxW(
+            g_app.window,
+            L"Pattern size must be a whole number from 1 to 100.",
+            L"Invalid Pattern Size",
+            MB_ICONWARNING);
         return;
     }
-    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = writePipe;
-    si.hStdError = writePipe;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-
-    ZeroMemory(&g_app.jobProcess, sizeof(g_app.jobProcess));
-    std::wstring cmd = build_controller_command(mode);
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
-
-    BOOL ok = CreateProcessW(
-        nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
-        nullptr, g_app.root.c_str(), &si, &g_app.jobProcess);
-    CloseHandle(writePipe);
-
-    if (!ok) {
-        CloseHandle(readPipe);
-        MessageBoxW(g_app.window, L"Failed to start Python controller. Run prepare_pc_python_env.ps1 or install Python on PATH.", L"Error", MB_ICONERROR);
+    if (percent < 1 || percent > 100) {
+        MessageBoxW(
+            g_app.window,
+            L"Pattern size must be between 1 and 100 percent.",
+            L"Invalid Pattern Size",
+            MB_ICONWARNING);
         return;
     }
 
-    g_app.jobPipeRead = readPipe;
-    g_app.jobRunning.store(true);
-    set_job_buttons(true);
-    set_status(L"Running");
-    std::thread(read_pipe_thread, readPipe).detach();
-    std::thread(wait_process_thread, g_app.jobProcess.hProcess).detach();
+    const std::wstring script = path_join(g_app.root, L"generate_centered_patterns.ps1");
+    const std::wstring source = path_join(g_app.root, L"generated_patterns1");
+    const std::wstring output = get_text(g_app.patterns);
+    if (!file_exists(script)) {
+        MessageBoxW(
+            g_app.window,
+            L"generate_centered_patterns.ps1 was not found next to the application.",
+            L"Missing Pattern Generator",
+            MB_ICONERROR);
+        return;
+    }
+    if (!dir_exists(source)) {
+        MessageBoxW(
+            g_app.window,
+            L"The source pattern folder generated_patterns1 was not found next to the application.",
+            L"Missing Source Patterns",
+            MB_ICONERROR);
+        return;
+    }
+    if (output.empty()) {
+        MessageBoxW(
+            g_app.window,
+            L"Select or enter a pattern output folder first.",
+            L"Missing Pattern Folder",
+            MB_ICONWARNING);
+        return;
+    }
+
+    std::wstring scale = percent == 100
+        ? L"1"
+        : L"0." + std::wstring(percent < 10 ? L"0" : L"") + std::to_wstring(percent);
+    std::wstringstream command;
+    command << L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File " << quote(script)
+            << L" -SourceDirectory " << quote(source)
+            << L" -OutputDirectory " << quote(output)
+            << L" -Scale " << scale;
+
+    append_log(
+        g_app.log,
+        L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
+            + L"% x " + std::to_wstring(percent) + L"% in " + output + L"\r\n");
+    launch_job_process(
+        command.str(),
+        L"pattern size update",
+        L"Updating Patterns",
+        L"Failed to start the pattern generator with Windows PowerShell.");
 }
 
 void stop_job() {
@@ -586,7 +680,18 @@ void build_ui(HWND hwnd) {
         path_join(g_app.root, L"generated_patterns_centered"),
         110,
         y,
-        700,
+        400,
+        24);
+    make_label(hwnd, L"Size (%)", 525, y + 4, 65, 22);
+    g_app.patternScale = make_edit(hwnd, IDC_PATTERN_SCALE, L"10", 590, y, 55, 24);
+    SendMessageW(g_app.patternScale, EM_SETLIMITTEXT, 3, 0);
+    g_app.applyPatternScale = make_button(
+        hwnd,
+        IDC_APPLY_PATTERN_SCALE,
+        L"Apply Size",
+        660,
+        y,
+        150,
         24);
     make_button(hwnd, IDC_BROWSE_PATTERNS, L"Browse", 825, y, 100, 24);
 
@@ -675,6 +780,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case IDC_BROWSE_PATTERNS:
             set_text(g_app.patterns, browse_folder(hwnd, L"Select pattern folder", get_text(g_app.patterns)));
             return 0;
+        case IDC_APPLY_PATTERN_SCALE:
+            apply_pattern_size();
+            return 0;
         case IDC_BROWSE_OUTPUT:
             set_text(g_app.output, browse_folder(hwnd, L"Select output folder", get_text(g_app.output)));
             return 0;
@@ -729,6 +837,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_APP_DONE: {
         DWORD exitCode = static_cast<DWORD>(wparam);
+        const bool patternSizeUpdate = g_app.jobLabel == L"pattern size update";
         if (g_app.jobProcess.hThread) CloseHandle(g_app.jobProcess.hThread);
         if (g_app.jobProcess.hProcess) CloseHandle(g_app.jobProcess.hProcess);
         ZeroMemory(&g_app.jobProcess, sizeof(g_app.jobProcess));
@@ -737,7 +846,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         std::wstringstream ss;
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
-        set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        if (patternSizeUpdate) {
+            set_status(exitCode == 0 ? L"Patterns Updated" : L"Pattern Update Failed");
+        } else {
+            set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        }
         return 0;
     }
     case WM_CLOSE:

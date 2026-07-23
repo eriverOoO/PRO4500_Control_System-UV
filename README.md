@@ -62,6 +62,13 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
 powershell -ExecutionPolicy Bypass -File .\generate_centered_patterns.ps1
 ```
 
+`StructuredLightControlPanel.exe`에서는 `Patterns`에 출력 폴더를 지정하고
+`Size (%)`에 1~100 사이의 정수를 입력한 뒤 `Apply Size`를 누르면 같은 작업을
+GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 유지하면서 중앙
+50%×50% 영역에만 패턴을 배치하고 바깥을 검정으로 채웁니다. 14~21번 inverse
+패턴도 함께 다시 생성됩니다. 크기를 반복 변경해도 누적 축소되지 않도록 항상
+`generated_patterns1/`의 원본에서 다시 생성합니다.
+
 ## XIMEA SDK 요구 사항
 
 다음 항목이 포함된 XIMEA Windows Software Package를 설치해야 합니다.
