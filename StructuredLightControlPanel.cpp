@@ -91,6 +91,7 @@ struct AppState {
     HWND patterns{};
     HWND patternScale{};
     HWND applyPatternScale{};
+    HWND browsePatterns{};
     HWND output{};
     HWND cameraConfig{};
     HWND provider{};
@@ -131,6 +132,7 @@ struct AppState {
     HANDLE jobPipeRead = nullptr;
     std::atomic_bool jobRunning{false};
     std::atomic_bool patternUpdateRunning{false};
+    int patternScaleBeforeUpdate = -1;
     std::wstring root;
     std::wstring angleAdvanceFile;
     std::wstring jobLabel;
@@ -368,6 +370,78 @@ bool dir_exists(const std::wstring& path) {
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+int detect_pattern_scale_percent(const std::wstring& patternDirectory) {
+    const std::wstring whitePattern = path_join(patternDirectory, L"00_White.bmp");
+    HBITMAP bitmap = static_cast<HBITMAP>(LoadImageW(
+        nullptr,
+        whitePattern.c_str(),
+        IMAGE_BITMAP,
+        0,
+        0,
+        LR_LOADFROMFILE | LR_CREATEDIBSECTION));
+    if (!bitmap) return -1;
+
+    DIBSECTION dib{};
+    if (GetObjectW(bitmap, sizeof(dib), &dib) != sizeof(dib)
+        || !dib.dsBm.bmBits
+        || dib.dsBm.bmWidth <= 0
+        || dib.dsBm.bmHeight == 0) {
+        DeleteObject(bitmap);
+        return -1;
+    }
+
+    const int width = dib.dsBm.bmWidth;
+    const int height = std::abs(dib.dsBm.bmHeight);
+    const int bitsPerPixel = dib.dsBm.bmBitsPixel;
+    if (bitsPerPixel != 8 && bitsPerPixel != 24 && bitsPerPixel != 32) {
+        DeleteObject(bitmap);
+        return -1;
+    }
+
+    const int stride = ((width * bitsPerPixel + 31) / 32) * 4;
+    const auto* pixels = static_cast<const unsigned char*>(dib.dsBm.bmBits);
+    int minX = width;
+    int minY = height;
+    int maxX = -1;
+    int maxY = -1;
+
+    for (int y = 0; y < height; ++y) {
+        const unsigned char* row = pixels + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < width; ++x) {
+            bool nonBlack = false;
+            if (bitsPerPixel == 8) {
+                nonBlack = row[x] != 0;
+            } else {
+                const int bytesPerPixel = bitsPerPixel / 8;
+                const unsigned char* pixel = row + static_cast<size_t>(x) * bytesPerPixel;
+                nonBlack = pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0;
+            }
+            if (nonBlack) {
+                minX = std::min(minX, x);
+                minY = std::min(minY, y);
+                maxX = std::max(maxX, x);
+                maxY = std::max(maxY, y);
+            }
+        }
+    }
+    DeleteObject(bitmap);
+
+    if (maxX < minX || maxY < minY) return -1;
+    const int activeWidth = maxX - minX + 1;
+    const int activeHeight = maxY - minY + 1;
+    const int widthPercent = (activeWidth * 100 + width / 2) / width;
+    const int heightPercent = (activeHeight * 100 + height / 2) / height;
+    if (std::abs(widthPercent - heightPercent) > 1) return -1;
+    return std::clamp((widthPercent + heightPercent + 1) / 2, 1, 100);
+}
+
+void refresh_pattern_scale_display() {
+    const int percent = detect_pattern_scale_percent(get_text(g_app.patterns));
+    if (percent > 0) {
+        set_text(g_app.patternScale, std::to_wstring(percent));
+    }
+}
+
 long long current_epoch_ms() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -475,8 +549,10 @@ void set_job_buttons(bool running) {
 }
 
 void set_pattern_update_controls(bool running) {
+    EnableWindow(g_app.patterns, !running);
     EnableWindow(g_app.patternScale, !running);
     EnableWindow(g_app.applyPatternScale, !running);
+    EnableWindow(g_app.browsePatterns, !running);
 }
 
 void read_pipe_thread(HANDLE pipe) {
@@ -713,7 +789,11 @@ void apply_pattern_size() {
         g_app.log,
         L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
             + L"% x " + std::to_wstring(percent) + L"% in " + output + L"\r\n");
-    launch_pattern_update_process(command.str());
+    g_app.patternScaleBeforeUpdate = detect_pattern_scale_percent(output);
+    if (!launch_pattern_update_process(command.str())
+        && g_app.patternScaleBeforeUpdate > 0) {
+        set_text(g_app.patternScale, std::to_wstring(g_app.patternScaleBeforeUpdate));
+    }
 }
 
 void stop_job() {
@@ -752,16 +832,30 @@ void build_ui(HWND hwnd) {
 
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
+    const std::wstring defaultPatternDirectory =
+        path_join(g_app.root, L"generated_patterns_centered");
     g_app.patterns = make_edit(
         hwnd,
         IDC_PATTERNS,
-        path_join(g_app.root, L"generated_patterns_centered"),
+        defaultPatternDirectory,
         110,
         y,
         400,
         24);
     make_label(hwnd, L"Size (%)", 525, y + 4, 65, 22);
-    g_app.patternScale = make_edit(hwnd, IDC_PATTERN_SCALE, L"10", 590, y, 55, 24);
+    const int detectedPatternScale =
+        detect_pattern_scale_percent(defaultPatternDirectory);
+    const std::wstring initialPatternScale = detectedPatternScale > 0
+        ? std::to_wstring(detectedPatternScale)
+        : L"10";
+    g_app.patternScale = make_edit(
+        hwnd,
+        IDC_PATTERN_SCALE,
+        initialPatternScale,
+        590,
+        y,
+        55,
+        24);
     SendMessageW(g_app.patternScale, EM_SETLIMITTEXT, 3, 0);
     g_app.applyPatternScale = make_button(
         hwnd,
@@ -771,7 +865,8 @@ void build_ui(HWND hwnd) {
         y,
         150,
         24);
-    make_button(hwnd, IDC_BROWSE_PATTERNS, L"Browse", 825, y, 100, 24);
+    g_app.browsePatterns =
+        make_button(hwnd, IDC_BROWSE_PATTERNS, L"Browse", 825, y, 100, 24);
 
     y += 32;
     make_label(hwnd, L"Output", margin, y + 4, 80, 22);
@@ -855,8 +950,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_COMMAND: {
         int id = LOWORD(wparam);
         switch (id) {
+        case IDC_PATTERNS:
+            if (HIWORD(wparam) == EN_KILLFOCUS) {
+                refresh_pattern_scale_display();
+            }
+            return 0;
         case IDC_BROWSE_PATTERNS:
             set_text(g_app.patterns, browse_folder(hwnd, L"Select pattern folder", get_text(g_app.patterns)));
+            refresh_pattern_scale_display();
             return 0;
         case IDC_APPLY_PATTERN_SCALE:
             apply_pattern_size();
@@ -933,6 +1034,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ZeroMemory(&g_app.patternUpdateProcess, sizeof(g_app.patternUpdateProcess));
         g_app.patternUpdateRunning.store(false);
         set_pattern_update_controls(false);
+        if (exitCode == 0) {
+            refresh_pattern_scale_display();
+        } else if (g_app.patternScaleBeforeUpdate > 0) {
+            set_text(
+                g_app.patternScale,
+                std::to_wstring(g_app.patternScaleBeforeUpdate));
+        }
+        g_app.patternScaleBeforeUpdate = -1;
         std::wstringstream ss;
         ss << L"\r\n=== Pattern size update finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());

@@ -70,6 +70,9 @@ GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 
 `generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Size`는 패턴 파일만
 변경하며 스캔이나 투사를 시작하지 않습니다. 상태가 `Patterns Updated`로 바뀐
 뒤 `Start Scan` 또는 `Project Only`를 별도로 실행합니다.
+GUI를 시작하거나 `Patterns` 폴더를 변경하면 `00_White.bmp`의 실제 활성 영역을
+읽어 현재 크기를 `Size (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
+이미지를 다시 확인해 표시값을 즉시 갱신합니다.
 
 ## XIMEA SDK 요구 사항
 
