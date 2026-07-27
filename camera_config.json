@@ -4,9 +4,9 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 10000,
+      "exposure_us": 20000,
       "gain_db": 0.0,
-      "fps": 15.0,
+      "fps": 10.0,
       "trigger_mode": "software",
       "image_format": "mono8",
       "timeout_ms": 5000,
@@ -16,7 +16,7 @@
     "mock": {
       "width": 1280,
       "height": 720,
-      "fps": 15.0,
+      "fps": 10.0,
       "sample_image": ""
     }
   },
@@ -35,12 +35,12 @@
         },
         {
           "name": "mid",
-          "exposure_us": 10000,
+          "exposure_us": 20000,
           "gain_db": 0.0
         },
         {
           "name": "long",
-          "exposure_us": 40000,
+          "exposure_us": 80000,
           "gain_db": 0.0
         }
       ]

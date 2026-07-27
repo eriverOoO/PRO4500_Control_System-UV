@@ -338,7 +338,7 @@ def parse_bool(value: Any, default: bool = False) -> bool:
 
 
 def default_hdr_brackets(args: argparse.Namespace) -> tuple[ExposureBracket, ...]:
-    mid_exposure = int(args.exposure_us or 10000)
+    mid_exposure = int(args.exposure_us or 20000)
     gain_db = float(args.gain_db if args.gain_db is not None else 0.0)
     return (
         ExposureBracket("short", max(1, mid_exposure // 4), gain_db),
@@ -389,7 +389,7 @@ def apply_bracket_overrides(
 
 
 def args_default_exposures() -> dict[str, int]:
-    return {"short": 2500, "mid": 10000, "long": 40000}
+    return {"short": 2500, "mid": 20000, "long": 80000}
 
 
 def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
@@ -404,7 +404,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
         if not isinstance(item, dict):
             continue
         name = safe_filename_token(str(item.get("name") or f"bracket_{index:02d}"))
-        exposure_us = int(item.get("exposure_us", args.exposure_us or 10000))
+        exposure_us = int(item.get("exposure_us", args.exposure_us or 20000))
         gain_db = float(item.get("gain_db", args.gain_db if args.gain_db is not None else 0.0))
         brackets.append(ExposureBracket(name=name, exposure_us=max(1, exposure_us), gain_db=gain_db))
     if not brackets:
@@ -507,6 +507,60 @@ class MonitorBounds:
     y: int
     width: int
     height: int
+    device_name: str = ""
+    primary: bool = False
+
+
+def windows_monitors() -> list[MonitorBounds]:
+    """Return physical monitor rectangles using the same Win32 coordinate space as OpenCV."""
+    if sys.platform != "win32":
+        return []
+
+    import ctypes
+    from ctypes import wintypes
+
+    # HighGUI uses physical pixels on Windows.  Without DPI awareness Windows can
+    # virtualize these coordinates, which makes a window miss a non-primary display.
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+    class MONITORINFOEXW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+            ("szDevice", wintypes.WCHAR * 32),
+        ]
+
+    monitors: list[MonitorBounds] = []
+    monitor_enum_proc = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM
+    )
+
+    @monitor_enum_proc
+    def collect(handle, _dc, _rect, _data):
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(info)
+        if ctypes.windll.user32.GetMonitorInfoW(handle, ctypes.byref(info)):
+            rect = info.rcMonitor
+            monitors.append(
+                MonitorBounds(
+                    x=rect.left,
+                    y=rect.top,
+                    width=rect.right - rect.left,
+                    height=rect.bottom - rect.top,
+                    device_name=info.szDevice,
+                    primary=bool(info.dwFlags & 1),  # MONITORINFOF_PRIMARY
+                )
+            )
+        return True
+
+    if not ctypes.windll.user32.EnumDisplayMonitors(None, None, collect, 0):
+        raise OSError("EnumDisplayMonitors failed")
+    return monitors
 
 
 class PatternDisplay:
@@ -530,6 +584,24 @@ class PatternDisplay:
             )
 
         try:
+            monitors = windows_monitors()
+            if not monitors:
+                from screeninfo import get_monitors  # type: ignore
+
+                monitors = [
+                    MonitorBounds(monitor.x, monitor.y, monitor.width, monitor.height)
+                    for monitor in get_monitors()
+                ]
+            if self.monitor_index < 0 or self.monitor_index >= len(monitors):
+                primary = next((monitor for monitor in monitors if monitor.primary), monitors[0])
+                print(
+                    f"[display] monitor index {self.monitor_index} is unavailable; "
+                    f"using {primary.device_name or 'the primary display'} instead.",
+                    flush=True,
+                )
+                return primary
+            return monitors[self.monitor_index]
+        except Exception:
             from screeninfo import get_monitors  # type: ignore
 
             monitors = get_monitors()
@@ -550,6 +622,32 @@ class PatternDisplay:
                 height=height,
             )
 
+    def _pin_fullscreen_window_to_monitor(self) -> bool:
+        """Correct HighGUI's Windows fullscreen placement after it defaults to primary."""
+        if sys.platform != "win32" or self.windowed:
+            return False
+        try:
+            import ctypes
+
+            hwnd = ctypes.windll.user32.FindWindowW(None, self.window_name)
+            if not hwnd:
+                return False
+            # HWND_TOP keeps the projection unobscured but does not make it a
+            # permanent topmost window once the HighGUI window is destroyed.
+            return bool(
+                ctypes.windll.user32.SetWindowPos(
+                    hwnd,
+                    -1,  # HWND_TOPMOST
+                    self.bounds.x,
+                    self.bounds.y,
+                    self.bounds.width,
+                    self.bounds.height,
+                    0x0040,  # SWP_SHOWWINDOW
+                )
+            )
+        except Exception:
+            return False
+
     def open(self, cv2) -> None:
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.moveWindow(self.window_name, self.bounds.x, self.bounds.y)
@@ -560,10 +658,18 @@ class PatternDisplay:
                 cv2.WND_PROP_FULLSCREEN,
                 cv2.WINDOW_FULLSCREEN,
             )
+            # Process the fullscreen request before forcing the native window
+            # back to the selected monitor.  Calling moveWindow only before
+            # WINDOW_FULLSCREEN is not sufficient on the Windows HighGUI backend.
+            cv2.waitKey(1)
+            if not self._pin_fullscreen_window_to_monitor():
+                cv2.moveWindow(self.window_name, self.bounds.x, self.bounds.y)
         print(
             "[display] window="
             f"{self.window_name!r} x={self.bounds.x} y={self.bounds.y} "
-            f"w={self.bounds.width} h={self.bounds.height}",
+            f"w={self.bounds.width} h={self.bounds.height} "
+            f"device={self.bounds.device_name or 'unknown'} "
+            f"primary={self.bounds.primary}",
             flush=True,
         )
 
@@ -816,7 +922,7 @@ def run_scan(args: argparse.Namespace) -> int:
             saturated_threshold=hdr.saturated_threshold,
             dark_threshold=hdr.dark_threshold,
             black_offset=hdr.black_offset,
-            brackets=(ExposureBracket("single", int(args.exposure_us or 10000), float(args.gain_db or 0.0)),),
+            brackets=(ExposureBracket("single", int(args.exposure_us or 20000), float(args.gain_db or 0.0)),),
         )
 
     output_root = args.output.resolve()
@@ -1388,10 +1494,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-x", type=int)
     parser.add_argument("--window-y", type=int)
     parser.add_argument("--stretch", action="store_true", help="Stretch pattern to screen.")
-    parser.add_argument("--settle-ms", default=300, type=int)
+    parser.add_argument("--settle-ms", default=500, type=int)
     parser.add_argument("--pre-black-ms", default=300, type=int)
     parser.add_argument("--finish-black-ms", default=300, type=int)
-    parser.add_argument("--bracket-settle-ms", default=50, type=int)
+    parser.add_argument("--bracket-settle-ms", default=150, type=int)
     parser.add_argument("--retries", default=2, type=int)
     parser.add_argument("--retry-delay-ms", default=300, type=int)
     parser.add_argument("--angles", default="0")
@@ -1415,7 +1521,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--legacy-14-patterns", action="store_true", help="Capture only ids 0..13 for older decoders.")
     parser.add_argument(
         "--save-all-images",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Save raw exposure brackets and HDR masks in addition to final decoder images.",
     )
 

@@ -231,6 +231,13 @@ XIMEA 구조광 스캔:
 .\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --angles 0
 ```
 
+프로젝터 화면 선택:
+
+- 제어 패널의 `Monitor`는 0부터 시작하는 Windows 모니터 인덱스입니다. 노트북이
+  0, 프로젝터가 두 번째 화면이면 `1`을 사용합니다.
+- 투사 시작 로그의 `device=\\.\DISPLAYn`과 좌표를 확인해 선택한 화면이
+  프로젝터인지 확인합니다. 프로젝터를 Windows 주 모니터로 지정할 필요는 없습니다.
+
 하드웨어 없이 합성 데이터로 디코더 폴더를 시험:
 
 ```powershell

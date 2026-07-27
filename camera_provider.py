@@ -31,9 +31,9 @@ class CameraSettings:
     provider: str = "mock"
     device_index: int = 0
     dll_path: str = ""
-    exposure_us: int = 10000
+    exposure_us: int = 20000
     gain_db: float = 0.0
-    fps: float = 15.0
+    fps: float = 10.0
     trigger_mode: str = "software"
     image_format: str = "mono8"
     timeout_ms: int = 5000
@@ -144,9 +144,9 @@ class CameraProvider:
             provider=provider,
             device_index=int(value("device_index", ximea_section.get("device_index", 0), source=ximea_section)),
             dll_path=resolved_path(str(value("dll_path", ximea_section.get("dll_path", ""), source=ximea_section))),
-            exposure_us=int(value("exposure_us", ximea_section.get("exposure_us", 10000), source=ximea_section)),
+            exposure_us=int(value("exposure_us", ximea_section.get("exposure_us", 20000), source=ximea_section)),
             gain_db=float(value("gain_db", ximea_section.get("gain_db", 0.0), source=ximea_section)),
-            fps=float(value("fps", ximea_section.get("fps", 15.0), source=ximea_section)),
+            fps=float(value("fps", ximea_section.get("fps", 10.0), source=ximea_section)),
             trigger_mode=str(value("trigger_mode", ximea_section.get("trigger_mode", "software"), source=ximea_section)).lower(),
             image_format=str(value("image_format", ximea_section.get("image_format", "mono8"), source=ximea_section)).lower(),
             timeout_ms=int(value("timeout_ms", ximea_section.get("timeout_ms", 5000), source=ximea_section)),

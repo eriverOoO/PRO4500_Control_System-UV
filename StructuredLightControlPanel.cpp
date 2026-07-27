@@ -879,11 +879,11 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Device", 198, y + 4, 55, 22);
     g_app.deviceIndex = make_edit(hwnd, IDC_DEVICE_INDEX, L"0", 252, y, 50, 24);
     make_label(hwnd, L"Base exp us", 325, y + 4, 85, 22);
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"10000", 410, y, 90, 24);
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"20000", 410, y, 90, 24);
     make_label(hwnd, L"Base gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
-    g_app.fps = make_edit(hwnd, IDC_FPS, L"15.0", 715, y, 70, 24);
+    g_app.fps = make_edit(hwnd, IDC_FPS, L"10.0", 715, y, 70, 24);
     make_label(hwnd, L"Trigger", 805, y + 4, 60, 22);
     g_app.trigger = make_edit(hwnd, IDC_TRIGGER, L"software", 865, y, 70, 24);
 
@@ -895,7 +895,7 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Angles", 340, y + 4, 55, 22);
     g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
-    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"300", 655, y, 80, 24);
+    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"500", 655, y, 80, 24);
 
     y += 34;
     make_label(hwnd, L"HDR short us", margin, y + 4, 88, 22);
@@ -903,11 +903,11 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"dB", 190, y + 4, 24, 22);
     g_app.shortGain = make_edit(hwnd, IDC_SHORT_GAIN, L"0.0", 215, y, 54, 24);
     make_label(hwnd, L"mid us", 295, y + 4, 55, 22);
-    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"10000", 350, y, 78, 24);
+    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"20000", 350, y, 78, 24);
     make_label(hwnd, L"dB", 435, y + 4, 24, 22);
     g_app.midGain = make_edit(hwnd, IDC_MID_GAIN, L"0.0", 460, y, 54, 24);
     make_label(hwnd, L"long us", 540, y + 4, 60, 22);
-    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"40000", 605, y, 78, 24);
+    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"80000", 605, y, 78, 24);
     make_label(hwnd, L"dB", 690, y + 4, 24, 22);
     g_app.longGain = make_edit(hwnd, IDC_LONG_GAIN, L"0.0", 715, y, 54, 24);
 
@@ -915,7 +915,7 @@ void build_ui(HWND hwnd) {
     g_app.windowed = make_checkbox(hwnd, IDC_WINDOWED, L"Windowed projection", margin, y, 170, 24, false);
     g_app.stretch = make_checkbox(hwnd, IDC_STRETCH, L"Stretch patterns", 205, y, 140, 24, false);
     g_app.pauseFirst = make_checkbox(hwnd, IDC_PAUSE_FIRST, L"Pause before first angle", 370, y, 190, 24, false);
-    g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, false);
+    g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, true);
     make_label(hwnd, L"Project repeat", 705, y + 4, 95, 22);
     g_app.projectRepeat = make_edit(hwnd, IDC_PROJECT_REPEAT, L"1", 805, y, 50, 24);
 
