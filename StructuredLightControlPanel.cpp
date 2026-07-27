@@ -428,11 +428,8 @@ int detect_pattern_scale_percent(const std::wstring& patternDirectory) {
 
     if (maxX < minX || maxY < minY) return -1;
     const int activeWidth = maxX - minX + 1;
-    const int activeHeight = maxY - minY + 1;
     const int widthPercent = (activeWidth * 100 + width / 2) / width;
-    const int heightPercent = (activeHeight * 100 + height / 2) / height;
-    if (std::abs(widthPercent - heightPercent) > 1) return -1;
-    return std::clamp((widthPercent + heightPercent + 1) / 2, 1, 100);
+    return std::clamp(widthPercent, 1, 100);
 }
 
 void refresh_pattern_scale_display() {
@@ -788,7 +785,7 @@ void apply_pattern_size() {
     append_log(
         g_app.log,
         L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
-            + L"% x " + std::to_wstring(percent) + L"% in " + output + L"\r\n");
+            + L"% width x 100% height in " + output + L"\r\n");
     g_app.patternScaleBeforeUpdate = detect_pattern_scale_percent(output);
     if (!launch_pattern_update_process(command.str())
         && g_app.patternScaleBeforeUpdate > 0) {
