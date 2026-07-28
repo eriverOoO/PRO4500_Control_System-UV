@@ -1031,7 +1031,7 @@ void build_ui(HWND hwnd) {
         detect_pattern_scale_percent(defaultPatternDirectory);
     const std::wstring initialPatternScale = detectedPatternScale > 0
         ? std::to_wstring(detectedPatternScale)
-        : L"10";
+        : L"100";
     g_app.patternScale = make_edit(
         hwnd,
         IDC_PATTERN_SCALE,
