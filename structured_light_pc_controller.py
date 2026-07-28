@@ -1065,22 +1065,43 @@ def detect_aruco_markers(cv2, image: Any, dictionary_name: str) -> dict[int, Any
     }
 
 
+def aruco_marker_candidates(marker_ids: list[int]) -> list[list[int]]:
+    """Return all markers first, then opposite stage pairs in configured order."""
+    candidates = [marker_ids]
+    if len(marker_ids) == 4:
+        candidates.extend(([marker_ids[0], marker_ids[2]], [marker_ids[1], marker_ids[3]]))
+    return candidates
+
+
+def select_aruco_markers(
+    detected: dict[int, Any],
+    marker_ids: list[int],
+) -> list[int]:
+    for candidate in aruco_marker_candidates(marker_ids):
+        if all(marker_id in detected for marker_id in candidate):
+            return candidate
+    found = sorted(detected)
+    expected = (
+        f"all IDs {marker_ids} or opposite pair {marker_ids[0]},{marker_ids[2]} "
+        f"or {marker_ids[1]},{marker_ids[3]}"
+        if len(marker_ids) == 4
+        else f"all IDs {marker_ids}"
+    )
+    raise RuntimeError(
+        "ArUco verification failed. Recapture this no-pattern image after checking "
+        f"focus, exposure, and marker visibility. Expected {expected}; detected IDs={found}"
+    )
+
+
 def require_aruco_markers(
     cv2,
     image: Any,
     *,
     dictionary_name: str,
     marker_ids: list[int],
-) -> dict[int, Any]:
+) -> tuple[dict[int, Any], list[int]]:
     detected = detect_aruco_markers(cv2, image, dictionary_name)
-    missing = [marker_id for marker_id in marker_ids if marker_id not in detected]
-    if missing:
-        found = sorted(detected)
-        raise RuntimeError(
-            "ArUco verification failed. Recapture this no-pattern image after checking "
-            f"focus, exposure, and marker visibility. Missing IDs={missing}; detected IDs={found}"
-        )
-    return detected
+    return detected, select_aruco_markers(detected, marker_ids)
 
 
 def aruco_prescan_dir(output_root: Path) -> Path:
@@ -1104,7 +1125,7 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
         camera, _settings = open_camera(args)
         frame = camera.capture_frame()
         gui_preview.publish(frame.image)
-        markers = require_aruco_markers(
+        markers, selected_ids = require_aruco_markers(
             cv2,
             frame.image,
             dictionary_name=args.aruco_dictionary,
@@ -1118,7 +1139,8 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             "filename": output_path.name,
             "size_bytes": size_bytes,
             "dictionary": args.aruco_dictionary,
-            "marker_ids": marker_ids,
+            "requested_marker_ids": marker_ids,
+            "selected_marker_ids": selected_ids,
             "detected_ids": sorted(markers),
             "camera_timestamp_ms": frame.timestamp_ms,
             "camera_frame_index": frame.frame_index,
@@ -1127,7 +1149,7 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         print(
-            f"[aruco] verified role={args.aruco_prescan_role} ids={sorted(markers)} saved={output_path}",
+            f"[aruco] verified role={args.aruco_prescan_role} selected_ids={selected_ids} saved={output_path}",
             flush=True,
         )
         return 0
@@ -1201,10 +1223,25 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
             raise RuntimeError("Capture the missing ArUco prescan image(s) first: " + ", ".join(missing))
         zero = read_image(cv2, zero_path)
         rotated = read_image(cv2, rotated_path)
-        target_by_id = require_aruco_markers(cv2, zero, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids)
-        source_by_id = require_aruco_markers(cv2, rotated, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids)
-        source = np.asarray([point for marker_id in marker_ids for point in source_by_id[marker_id]], dtype=np.float32)
-        target = np.asarray([point for marker_id in marker_ids for point in target_by_id[marker_id]], dtype=np.float32)
+        target_by_id, _target_selected = require_aruco_markers(
+            cv2, zero, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
+        )
+        source_by_id, _source_selected = require_aruco_markers(
+            cv2, rotated, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
+        )
+        shared_by_candidate = [
+            candidate
+            for candidate in aruco_marker_candidates(marker_ids)
+            if all(marker_id in target_by_id and marker_id in source_by_id for marker_id in candidate)
+        ]
+        if not shared_by_candidate:
+            raise RuntimeError(
+                "The 0 and nominal-180 prescans do not share the same full marker set or opposite pair. "
+                "Recapture the view with the missing matching pair."
+            )
+        selected_ids = shared_by_candidate[0]
+        source = np.asarray([point for marker_id in selected_ids for point in source_by_id[marker_id]], dtype=np.float32)
+        target = np.asarray([point for marker_id in selected_ids for point in target_by_id[marker_id]], dtype=np.float32)
         matrix, inliers = cv2.findHomography(
             source,
             target,
@@ -1223,7 +1260,8 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
             "target": {"role": "stage-0", "image": str(zero_path)},
             "aruco": {
                 "dictionary": args.aruco_dictionary,
-                "marker_ids": marker_ids,
+                "requested_marker_ids": marker_ids,
+                "marker_ids": selected_ids,
                 "method": "homography",
                 "ransac_threshold_px": float(args.aruco_ransac_threshold_px),
                 **stats,
@@ -1245,7 +1283,7 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
         output_path = aruco_prescan_dir(output_root) / "stage_precalibration.json"
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(
-            f"[aruco] calibration ready actual_rotation={abs(angle_deg):.4f}deg "
+            f"[aruco] calibration ready selected_ids={selected_ids} actual_rotation={abs(angle_deg):.4f}deg "
             f"rmse={stats['reprojection_rmse_px']:.3f}px saved={output_path}",
             flush=True,
         )

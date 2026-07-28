@@ -319,10 +319,13 @@ before every 22 + 22 pattern scan:
    **Capture ArUco rotated**.
 3. Click **Calculate Alignment**.
 
-Both captures are made with the Blue LED forced to 0. The controller verifies all
-configured ArUco IDs before it saves either image. A failed check leaves the last
-successful image and calibration untouched and reports that the current view must
-be recaptured. A successful calculation writes
+Both captures are made with the Blue LED forced to 0. The controller uses all four
+configured markers when they are visible. If the camera crops two markers, it also
+accepts one visible opposite pair: configured order `0,1,2,3` means `(0,2)` or
+`(1,3)`; order `1,2,3,4` means `(1,3)` or `(2,4)`. The same pair must be visible
+in both prescan images. A failed check leaves the last successful image and
+calibration untouched and reports that the current view must be recaptured. A
+successful calculation writes
 `captures/aruco_precalibration/stage_precalibration.json`.
 
 The main 22 + 22 scan is blocked until this JSON exists. Each main scan copies it
