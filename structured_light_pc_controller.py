@@ -787,6 +787,31 @@ def merge_hdr_frames(
     return merged, saturated_mask, dark_mask, report
 
 
+def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, dict[str, Any]]:
+    import numpy as np  # type: ignore
+
+    output = to_grayscale(cv2, frame).copy()
+    masks = np.zeros(output.shape, dtype=np.uint8)
+    if np.issubdtype(output.dtype, np.integer):
+        output_bit_depth = int(np.iinfo(output.dtype).bits)
+    else:
+        output_bit_depth = int(output.dtype.itemsize * 8)
+    report = {
+        "algorithm": "single_exposure_passthrough",
+        "output_bit_depth": output_bit_depth,
+        "saturated_threshold": None,
+        "dark_threshold": None,
+        "black_offsets": [],
+        "saturated_pixel_count": 0,
+        "dark_pixel_count": 0,
+        "invalid_pixel_count": 0,
+        "input_dtype": str(output.dtype),
+        "input_shape": [int(output.shape[0]), int(output.shape[1])],
+        "bracket_priority": ["single"],
+    }
+    return output, masks, masks.copy(), report
+
+
 def validate_decode_outputs(folder: Path, expected_ids: tuple[int, ...]) -> list[int]:
     return [
         pattern_id
@@ -855,6 +880,13 @@ def run_scan(args: argparse.Namespace) -> int:
         synthetic_capture = bool(args.dry_run or args.no_camera)
         if not synthetic_capture:
             camera, camera_settings = open_camera(args)
+            if not hdr.enabled:
+                print(
+                    f"[camera] fixed settings for entire scan: "
+                    f"exposure={camera_settings.exposure_us}us "
+                    f"gain={camera_settings.gain_db:g}dB",
+                    flush=True,
+                )
         else:
             mode = "dry-run synthetic" if args.dry_run else "synthetic because --no-camera was set"
             print(f"[camera] {mode}", flush=True)
@@ -936,12 +968,13 @@ def run_scan(args: argparse.Namespace) -> int:
 
                         try:
                             if camera is not None:
-                                camera.configure_capture(
-                                    exposure_us=bracket.exposure_us,
-                                    gain_db=bracket.gain_db,
-                                )
-                                if args.bracket_settle_ms > 0:
-                                    time.sleep(args.bracket_settle_ms / 1000.0)
+                                if hdr.enabled:
+                                    camera.configure_capture(
+                                        exposure_us=bracket.exposure_us,
+                                        gain_db=bracket.gain_db,
+                                    )
+                                    if args.bracket_settle_ms > 0:
+                                        time.sleep(args.bracket_settle_ms / 1000.0)
                                 frame = camera.capture_frame()
                             else:
                                 synthetic = synthesize_frame(cv2, projected, bracket, hdr)
@@ -1022,13 +1055,19 @@ def run_scan(args: argparse.Namespace) -> int:
                             f"bracket={bracket.name}: {last_error}"
                         )
 
-                merged, saturated_mask, dark_mask, merge_report = merge_hdr_frames(
-                    cv2,
-                    bracket_frames,
-                    hdr.brackets,
-                    hdr,
-                    bracket_black_offsets,
-                )
+                if hdr.enabled:
+                    merged, saturated_mask, dark_mask, merge_report = merge_hdr_frames(
+                        cv2,
+                        bracket_frames,
+                        hdr.brackets,
+                        hdr,
+                        bracket_black_offsets,
+                    )
+                else:
+                    merged, saturated_mask, dark_mask, merge_report = prepare_single_exposure_frame(
+                        cv2,
+                        bracket_frames[0],
+                    )
                 final_path = angle_dir / final_pattern_filename(spec.pattern_id)
                 final_size = write_image(cv2, final_path, merged)
 
@@ -1037,7 +1076,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 dark_filename = ""
                 saturated_size = 0
                 dark_size = 0
-                if args.save_all_images:
+                if args.save_all_images and hdr.enabled:
                     saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
                     dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
                     saturated_size = write_image(cv2, saturated_path, saturated_mask)

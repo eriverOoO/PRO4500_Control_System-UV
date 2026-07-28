@@ -22,7 +22,7 @@
   },
   "capture": {
     "hdr": {
-      "enabled": true,
+      "enabled": false,
       "output_bit_depth": 16,
       "saturated_threshold": 250,
       "dark_threshold": 5,
