@@ -10,6 +10,7 @@
 *.o
 *.obj
 *.txt
+!/requirements.txt
 
 # Build outputs
 build/

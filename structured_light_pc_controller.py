@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,25 @@ from camera_provider import CameraError, CameraFrame, CameraInterface, CameraPro
 
 IMAGE_SUFFIXES = {".bmp", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 FINAL_DECODE_SUFFIX = ".png"
+ARUCO_DICTIONARIES = {
+    "DICT_4X4_50": "DICT_4X4_50",
+    "DICT_4X4_100": "DICT_4X4_100",
+    "DICT_4X4_250": "DICT_4X4_250",
+    "DICT_4X4_1000": "DICT_4X4_1000",
+    "DICT_5X5_50": "DICT_5X5_50",
+    "DICT_5X5_100": "DICT_5X5_100",
+    "DICT_5X5_250": "DICT_5X5_250",
+    "DICT_5X5_1000": "DICT_5X5_1000",
+    "DICT_6X6_50": "DICT_6X6_50",
+    "DICT_6X6_100": "DICT_6X6_100",
+    "DICT_6X6_250": "DICT_6X6_250",
+    "DICT_6X6_1000": "DICT_6X6_1000",
+    "DICT_7X7_50": "DICT_7X7_50",
+    "DICT_7X7_100": "DICT_7X7_100",
+    "DICT_7X7_250": "DICT_7X7_250",
+    "DICT_7X7_1000": "DICT_7X7_1000",
+    "DICT_ARUCO_ORIGINAL": "DICT_ARUCO_ORIGINAL",
+}
 
 PATTERN_CONTRACT: tuple[tuple[int, str], ...] = (
     (0, "White"),
@@ -986,6 +1006,255 @@ def relative_to_scan(path: Path, scan_dir: Path) -> str:
         return path.as_posix()
 
 
+def parse_aruco_ids(value: str) -> list[int]:
+    try:
+        marker_ids = [int(item.strip()) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise ValueError("ArUco marker IDs must be comma-separated integers") from exc
+    if not marker_ids:
+        raise ValueError("At least one ArUco marker ID is required")
+    return marker_ids
+
+
+def aruco_dictionary(cv2, dictionary_name: str):
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        raise RuntimeError(
+            "cv2.aruco is unavailable. Install opencv-contrib-python in the PC controller environment."
+        )
+    dictionary_id = getattr(aruco, dictionary_name, None)
+    if dictionary_id is None:
+        raise ValueError(f"Unknown ArUco dictionary: {dictionary_name}")
+    if hasattr(aruco, "getPredefinedDictionary"):
+        return aruco.getPredefinedDictionary(dictionary_id)
+    return aruco.Dictionary_get(dictionary_id)
+
+
+def to_aruco_grayscale(cv2, image: Any):
+    import numpy as np  # type: ignore
+
+    grayscale = to_grayscale(cv2, image)
+    if grayscale.dtype == np.uint8:
+        return grayscale
+    finite = grayscale[np.isfinite(grayscale)]
+    if finite.size == 0:
+        return np.zeros(grayscale.shape, dtype=np.uint8)
+    low, high = np.percentile(finite, [1.0, 99.0])
+    if high <= low:
+        low, high = float(np.min(finite)), float(np.max(finite))
+    if high <= low:
+        return np.zeros(grayscale.shape, dtype=np.uint8)
+    scaled = (grayscale.astype(np.float32) - float(low)) * (255.0 / (float(high) - float(low)))
+    return np.clip(scaled, 0, 255).astype(np.uint8)
+
+
+def detect_aruco_markers(cv2, image: Any, dictionary_name: str) -> dict[int, Any]:
+    aruco = cv2.aruco
+    dictionary = aruco_dictionary(cv2, dictionary_name)
+    grayscale = to_aruco_grayscale(cv2, image)
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(dictionary, aruco.DetectorParameters())
+        corners, ids, _rejected = detector.detectMarkers(grayscale)
+    else:
+        corners, ids, _rejected = aruco.detectMarkers(grayscale, dictionary)
+    if ids is None:
+        return {}
+    return {
+        int(marker_id): marker_corners.reshape(4, 2).astype(float)
+        for marker_id, marker_corners in zip(ids.ravel().tolist(), corners)
+    }
+
+
+def require_aruco_markers(
+    cv2,
+    image: Any,
+    *,
+    dictionary_name: str,
+    marker_ids: list[int],
+) -> dict[int, Any]:
+    detected = detect_aruco_markers(cv2, image, dictionary_name)
+    missing = [marker_id for marker_id in marker_ids if marker_id not in detected]
+    if missing:
+        found = sorted(detected)
+        raise RuntimeError(
+            "ArUco verification failed. Recapture this no-pattern image after checking "
+            f"focus, exposure, and marker visibility. Missing IDs={missing}; detected IDs={found}"
+        )
+    return detected
+
+
+def aruco_prescan_dir(output_root: Path) -> Path:
+    return output_root / "aruco_precalibration"
+
+
+def aruco_prescan_image_path(output_root: Path, role: str) -> Path:
+    if role not in {"zero", "rotated"}:
+        raise ValueError("ArUco prescan role must be zero or rotated")
+    name = "prescan_0.png" if role == "zero" else "prescan_nominal_180.png"
+    return aruco_prescan_dir(output_root) / name
+
+
+def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
+    """Capture and validate one no-pattern ArUco frame without replacing a good frame on failure."""
+    cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
+    camera: CameraInterface | None = None
+    try:
+        marker_ids = parse_aruco_ids(args.aruco_ids)
+        camera, _settings = open_camera(args)
+        frame = camera.capture_frame()
+        gui_preview.publish(frame.image)
+        markers = require_aruco_markers(
+            cv2,
+            frame.image,
+            dictionary_name=args.aruco_dictionary,
+            marker_ids=marker_ids,
+        )
+        output_path = aruco_prescan_image_path(args.output.resolve(), args.aruco_prescan_role)
+        size_bytes = save_camera_frame(cv2, frame, output_path)
+        metadata = {
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "role": args.aruco_prescan_role,
+            "filename": output_path.name,
+            "size_bytes": size_bytes,
+            "dictionary": args.aruco_dictionary,
+            "marker_ids": marker_ids,
+            "detected_ids": sorted(markers),
+            "camera_timestamp_ms": frame.timestamp_ms,
+            "camera_frame_index": frame.frame_index,
+        }
+        (output_path.parent / f"{args.aruco_prescan_role}_capture.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(
+            f"[aruco] verified role={args.aruco_prescan_role} ids={sorted(markers)} saved={output_path}",
+            flush=True,
+        )
+        return 0
+    except (CameraError, RuntimeError, ValueError) as exc:
+        print(f"[aruco] ERROR: {exc}", flush=True)
+        return 1
+    finally:
+        if camera is not None:
+            camera.stop()
+            camera.close()
+
+
+def aruco_reprojection_stats(cv2, source: Any, target: Any, matrix: Any, inliers: Any) -> dict[str, float | int]:
+    import numpy as np  # type: ignore
+
+    projected = cv2.perspectiveTransform(source.reshape(-1, 1, 2).astype(np.float32), matrix).reshape(-1, 2)
+    distances = np.linalg.norm(projected - target, axis=1)
+    inlier_mask = np.ones(len(distances), dtype=bool) if inliers is None else np.asarray(inliers).reshape(-1).astype(bool)
+    if len(inlier_mask) != len(distances):
+        inlier_mask = np.ones(len(distances), dtype=bool)
+    inlier_distances = distances[inlier_mask]
+    return {
+        "reprojection_rmse_px": float(np.sqrt(np.mean(distances * distances))),
+        "inlier_reprojection_rmse_px": float(np.sqrt(np.mean(inlier_distances * inlier_distances))),
+        "max_reprojection_error_px": float(np.max(distances)),
+        "point_count": int(len(distances)),
+        "inlier_count": int(np.count_nonzero(inlier_mask)),
+    }
+
+
+def aruco_similarity_summary(source: Any, target: Any) -> tuple[float, float, list[float] | None]:
+    """Summarize actual rotation and fixed point; the homography remains the fusion warp."""
+    import numpy as np  # type: ignore
+
+    src = np.asarray(source, dtype=np.float64)
+    dst = np.asarray(target, dtype=np.float64)
+    src_mean, dst_mean = src.mean(axis=0), dst.mean(axis=0)
+    src_centered, dst_centered = src - src_mean, dst - dst_mean
+    energy = float(np.sum(src_centered * src_centered))
+    if energy <= np.finfo(float).eps:
+        raise RuntimeError("ArUco points are degenerate; recapture both prescan images")
+    u, _singular_values, vt = np.linalg.svd(src_centered.T @ dst_centered)
+    rotation = vt.T @ u.T
+    if np.linalg.det(rotation) < 0:
+        vt[-1, :] *= -1.0
+        rotation = vt.T @ u.T
+    scale = float(np.sum((src_centered @ rotation.T) * dst_centered) / energy)
+    translation = dst_mean - scale * (rotation @ src_mean)
+    angle_deg = math.degrees(math.atan2(float(rotation[1, 0]), float(rotation[0, 0])))
+    angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
+    fixed_point_matrix = np.eye(2) - scale * rotation
+    center = None
+    if abs(float(np.linalg.det(fixed_point_matrix))) >= 1e-8:
+        value = np.linalg.solve(fixed_point_matrix, translation)
+        center = [float(value[0]), float(value[1])]
+    return float(angle_deg), scale, center
+
+
+def run_aruco_precalibration(args: argparse.Namespace) -> int:
+    """Create the standard decoder-compatible fusion JSON from two verified prescans."""
+    import numpy as np  # type: ignore
+
+    cv2 = import_cv2()
+    try:
+        marker_ids = parse_aruco_ids(args.aruco_ids)
+        output_root = args.output.resolve()
+        zero_path = aruco_prescan_image_path(output_root, "zero")
+        rotated_path = aruco_prescan_image_path(output_root, "rotated")
+        if not zero_path.exists() or not rotated_path.exists():
+            missing = [str(path) for path in (zero_path, rotated_path) if not path.exists()]
+            raise RuntimeError("Capture the missing ArUco prescan image(s) first: " + ", ".join(missing))
+        zero = read_image(cv2, zero_path)
+        rotated = read_image(cv2, rotated_path)
+        target_by_id = require_aruco_markers(cv2, zero, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids)
+        source_by_id = require_aruco_markers(cv2, rotated, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids)
+        source = np.asarray([point for marker_id in marker_ids for point in source_by_id[marker_id]], dtype=np.float32)
+        target = np.asarray([point for marker_id in marker_ids for point in target_by_id[marker_id]], dtype=np.float32)
+        matrix, inliers = cv2.findHomography(
+            source,
+            target,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=float(args.aruco_ransac_threshold_px),
+        )
+        if matrix is None:
+            raise RuntimeError("Could not estimate ArUco homography. Recapture both prescan images")
+        stats = aruco_reprojection_stats(cv2, source, target, matrix, inliers)
+        angle_deg, scale, center = aruco_similarity_summary(source, target)
+        payload = {
+            "homography": np.asarray(matrix, dtype=float).tolist(),
+            "matrix": np.asarray(matrix, dtype=float).tolist(),
+            "transform_kind": "homography",
+            "source": {"role": "stage-rotated", "image": str(rotated_path)},
+            "target": {"role": "stage-0", "image": str(zero_path)},
+            "aruco": {
+                "dictionary": args.aruco_dictionary,
+                "marker_ids": marker_ids,
+                "method": "homography",
+                "ransac_threshold_px": float(args.aruco_ransac_threshold_px),
+                **stats,
+                "rotation_source_to_target_deg": angle_deg,
+                "deviation_from_180_deg": abs(abs(angle_deg) - float(args.aruco_intended_rotation_deg)),
+                "similarity_scale": scale,
+                "rotation_center_target_xy": center,
+            },
+            "stage_precalibration": {
+                "commanded_stage_value": float(args.aruco_stage_command_value),
+                "intended_rotation_deg": float(args.aruco_intended_rotation_deg),
+                "actual_rotation_magnitude_deg": abs(angle_deg),
+                "source_to_target_rotation_deg": angle_deg,
+                "rotation_center_target_xy": center,
+                "similarity_scale": scale,
+                "usage": "Maps the nominal-180-degree structured-light scan into the 0-degree scan.",
+            },
+        }
+        output_path = aruco_prescan_dir(output_root) / "stage_precalibration.json"
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(
+            f"[aruco] calibration ready actual_rotation={abs(angle_deg):.4f}deg "
+            f"rmse={stats['reprojection_rmse_px']:.3f}px saved={output_path}",
+            flush=True,
+        )
+        return 0
+    except (RuntimeError, ValueError) as exc:
+        print(f"[aruco] ERROR: {exc}", flush=True)
+        return 1
+
+
 def run_scan(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
     gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
@@ -1010,6 +1279,25 @@ def run_scan(args: argparse.Namespace) -> int:
     scan_id = safe_scan_id(args.scan_id or datetime.now().strftime("scan_%Y%m%d_%H%M%S"))
     scan_dir = output_root / scan_id
     scan_dir.mkdir(parents=True, exist_ok=True)
+    stage_precalibration: dict[str, str] = {"status": "not_found"}
+    configured_precalibration = args.stage_precalibration or (
+        aruco_prescan_dir(output_root) / "stage_precalibration.json"
+    )
+    if configured_precalibration.exists():
+        copied_precalibration = scan_dir / "stage_precalibration.json"
+        shutil.copy2(configured_precalibration, copied_precalibration)
+        stage_precalibration = {
+            "status": "copied",
+            "source": str(configured_precalibration),
+            "filename": copied_precalibration.name,
+        }
+        print(f"[aruco] using persisted precalibration: {copied_precalibration}", flush=True)
+    else:
+        print(
+            "[aruco] WARNING: no persisted precalibration JSON was found; "
+            "capture and calculate the 0/nominal-180 ArUco prescan before decoding this scan.",
+            flush=True,
+        )
 
     angles = parse_csv_ints(args.angles, "angles")
     expected_pattern_ids = LEGACY_PATTERN_IDS if args.legacy_14_patterns else FULL_PATTERN_IDS
@@ -1331,6 +1619,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 for spec in patterns
             ],
             "angles_deg": angles,
+            "stage_precalibration": stage_precalibration,
             "metadata": asdict(capture_config.rig),
             "settings": {
                 "settle_ms": args.settle_ms,
@@ -1614,6 +1903,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rotation-command")
     parser.add_argument("--rotate-first-angle", action="store_true")
     parser.add_argument("--scan-id")
+    parser.add_argument(
+        "--stage-precalibration",
+        type=Path,
+        help="Optional decoder-compatible ArUco precalibration JSON to copy into each scan folder.",
+    )
     parser.add_argument("--scan-type", choices=("reference", "object"))
     parser.add_argument("--projector-tilt-deg", type=float)
     parser.add_argument("--focus-confirmed", action=argparse.BooleanOptionalAction, default=None)
@@ -1670,6 +1964,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--single-capture", action="store_true")
     parser.add_argument("--continuous-capture", nargs="?", const=0, type=int)
     parser.add_argument("--check-camera", action="store_true")
+    parser.add_argument("--aruco-prescan-capture", action="store_true")
+    parser.add_argument("--aruco-prescan-role", choices=("zero", "rotated"))
+    parser.add_argument("--aruco-precalibration", action="store_true")
+    parser.add_argument("--aruco-dictionary", choices=sorted(ARUCO_DICTIONARIES), default="DICT_4X4_50")
+    parser.add_argument("--aruco-ids", default="0,1,2,3")
+    parser.add_argument("--aruco-ransac-threshold-px", default=3.0, type=float)
+    parser.add_argument(
+        "--aruco-stage-command-value",
+        default=250.0,
+        type=float,
+        help="Stage program value for the nominal-180 view; it is not degrees.",
+    )
+    parser.add_argument("--aruco-intended-rotation-deg", default=180.0, type=float)
     parser.add_argument("--capture-interval-ms", default=0, type=int)
     return parser.parse_args()
 
@@ -1680,6 +1987,12 @@ def main() -> int:
     args = parse_args()
     if args.check_camera:
         return run_check_camera(args)
+    if args.aruco_prescan_capture:
+        if args.aruco_prescan_role is None:
+            raise SystemExit("--aruco-prescan-capture requires --aruco-prescan-role zero or rotated")
+        return run_aruco_prescan_capture(args)
+    if args.aruco_precalibration:
+        return run_aruco_precalibration(args)
     if args.project_only:
         return run_project_only(args)
     if args.preview:

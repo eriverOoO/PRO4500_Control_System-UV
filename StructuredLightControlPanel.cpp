@@ -76,6 +76,10 @@ enum ControlId {
     IDC_LED_VALUE,
     IDC_APPLY_LED,
     IDC_LED_OFF,
+    IDC_ARUCO_STAGE_COMMAND,
+    IDC_ARUCO_CAPTURE_ZERO,
+    IDC_ARUCO_CAPTURE_ROTATED,
+    IDC_ARUCO_CALCULATE,
 };
 
 enum class JobMode {
@@ -84,6 +88,9 @@ enum class JobMode {
     ProjectOnly,
     SingleCapture,
     ContinuousCapture,
+    ArucoCaptureZero,
+    ArucoCaptureRotated,
+    ArucoCalculate,
 };
 
 struct AppState {
@@ -131,6 +138,10 @@ struct AppState {
     HWND ledValue{};
     HWND applyLed{};
     HWND ledOff{};
+    HWND arucoStageCommand{};
+    HWND arucoCaptureZero{};
+    HWND arucoCaptureRotated{};
+    HWND arucoCalculate{};
     PROCESS_INFORMATION jobProcess{};
     PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
@@ -582,6 +593,13 @@ std::wstring build_controller_command(JobMode mode) {
         cmd << L" --single-capture";
     } else if (mode == JobMode::ContinuousCapture) {
         cmd << L" --continuous-capture " << quote(L"0");
+    } else if (mode == JobMode::ArucoCaptureZero) {
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role zero";
+    } else if (mode == JobMode::ArucoCaptureRotated) {
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role rotated";
+    } else if (mode == JobMode::ArucoCalculate) {
+        cmd << L" --aruco-precalibration"
+            << L" --aruco-stage-command-value " << quote(get_text(g_app.arucoStageCommand));
     }
 
     return cmd.str();
@@ -593,6 +611,10 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.projectOnly, !running);
     EnableWindow(g_app.singleCapture, !running);
     EnableWindow(g_app.continuousCapture, !running);
+    EnableWindow(g_app.arucoStageCommand, !running);
+    EnableWindow(g_app.arucoCaptureZero, !running);
+    EnableWindow(g_app.arucoCaptureRotated, !running);
+    EnableWindow(g_app.arucoCalculate, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
     EnableWindow(g_app.stop, running);
@@ -777,6 +799,23 @@ void start_job(JobMode mode, const std::wstring& label) {
     if ((mode == JobMode::Scan || mode == JobMode::ProjectOnly) && !dir_exists(get_text(g_app.patterns))) {
         MessageBoxW(g_app.window, L"Pattern folder does not exist.", L"Missing Patterns", MB_ICONERROR);
         return;
+    }
+    if (mode == JobMode::Scan) {
+        const std::wstring calibration = path_join(
+            path_join(get_text(g_app.output), L"aruco_precalibration"),
+            L"stage_precalibration.json");
+        if (!file_exists(calibration)) {
+            MessageBoxW(
+                g_app.window,
+                L"ArUco precalibration is not ready. Capture verified 0 and nominal-180 images, then click Calculate Alignment before the 22+22 main scan.",
+                L"ArUco Precalibration Required",
+                MB_ICONWARNING);
+            return;
+        }
+    }
+    if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated || mode == JobMode::ArucoCalculate) {
+        apply_led_value(0);
+        append_log(g_app.log, L"\r\n[aruco] Blue LED set to 0 for no-pattern prescan.\r\n");
     }
 
     if (g_app.previewRunning.load()) {
@@ -968,6 +1007,17 @@ void build_ui(HWND hwnd) {
     g_app.ledOff = make_button(hwnd, IDC_LED_OFF, L"LED Off", 550, y, 90, 28);
 
     y += 42;
+    make_label(hwnd, L"ArUco prescan", margin, y + 4, 90, 22);
+    make_label(hwnd, L"1) stage 0 > Capture 0   2) stage command", 110, y + 4, 285, 22);
+    g_app.arucoStageCommand = make_edit(hwnd, IDC_ARUCO_STAGE_COMMAND, L"250", 395, y, 55, 24);
+    make_label(hwnd, L"(nominal 180 deg) > Capture rotated > Calculate", 458, y + 4, 350, 22);
+
+    y += 32;
+    g_app.arucoCaptureZero = make_button(hwnd, IDC_ARUCO_CAPTURE_ZERO, L"Capture ArUco 0", margin, y, 145, 28);
+    g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture ArUco rotated", 170, y, 175, 28);
+    g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Calculate Alignment", 360, y, 160, 28);
+
+    y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
     const std::wstring defaultPatternDirectory =
         path_join(g_app.root, L"generated_patterns_centered");
@@ -1126,6 +1176,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case IDC_PREVIEW:
             restart_background_preview();
             return 0;
+        case IDC_ARUCO_CAPTURE_ZERO:
+            start_job(JobMode::ArucoCaptureZero, L"ArUco 0 prescan");
+            return 0;
+        case IDC_ARUCO_CAPTURE_ROTATED:
+            start_job(JobMode::ArucoCaptureRotated, L"ArUco nominal-180 prescan");
+            return 0;
+        case IDC_ARUCO_CALCULATE:
+            start_job(JobMode::ArucoCalculate, L"ArUco alignment calculation");
+            return 0;
         case IDC_PROJECT_ONLY:
             start_job(JobMode::ProjectOnly, L"project only");
             return 0;
@@ -1186,6 +1245,20 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
         set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        const bool isArucoJob = g_app.jobLabel.find(L"ArUco") != std::wstring::npos;
+        if (isArucoJob && exitCode != 0) {
+            MessageBoxW(
+                hwnd,
+                L"ArUco verification or alignment failed. The previous valid calibration was kept. Check marker visibility, focus, and exposure, then recapture the failed 0 or nominal-180 view.",
+                L"Recapture ArUco Prescan",
+                MB_ICONWARNING);
+        } else if (g_app.jobLabel == L"ArUco alignment calculation") {
+            MessageBoxW(
+                hwnd,
+                L"ArUco alignment is ready. This calibration will be copied into every later 22+22 scan until you calculate a new one.",
+                L"ArUco Alignment Ready",
+                MB_ICONINFORMATION);
+        }
         if (!g_app.closing) start_background_preview();
         return 0;
     }

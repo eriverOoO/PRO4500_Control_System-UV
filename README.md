@@ -303,6 +303,29 @@ captures/<scan_id>/
   메인 창에 표시합니다.
 ## Save Policy
 
+## ArUco prescan workflow for nominal 180-degree fusion
+
+In the native `StructuredLightControlPanel.exe`, use the **ArUco prescan** controls
+before every 22 + 22 pattern scan:
+
+1. Turn the stage to 0 and click **Capture ArUco 0**.
+2. Send the stage's program command value (normally `250`, which is **not** an
+   angle and is intended to produce a physical 180-degree rotation), then click
+   **Capture ArUco rotated**.
+3. Click **Calculate Alignment**.
+
+Both captures are made with the Blue LED forced to 0. The controller verifies all
+configured ArUco IDs before it saves either image. A failed check leaves the last
+successful image and calibration untouched and reports that the current view must
+be recaptured. A successful calculation writes
+`captures/aruco_precalibration/stage_precalibration.json`.
+
+The main 22 + 22 scan is blocked until this JSON exists. Each main scan copies it
+to `<scan_id>/stage_precalibration.json` and records it in `scan_log.json`; pass
+that JSON to the Non-planar_calc decoder as `--fusion-transform`. The latest valid
+calibration remains active for later scans until a new pair is captured and
+calculated.
+
 The native control panel includes a `Save All` option.
 
 - Off: save only final decoder images, `pattern_000.png` ... `pattern_021.png`.
