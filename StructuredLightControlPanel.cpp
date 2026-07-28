@@ -76,7 +76,6 @@ enum ControlId {
     IDC_LED_VALUE,
     IDC_APPLY_LED,
     IDC_LED_OFF,
-    IDC_ARUCO_STAGE_COMMAND,
     IDC_ARUCO_CAPTURE_ZERO,
     IDC_ARUCO_CAPTURE_ROTATED,
     IDC_ARUCO_CALCULATE,
@@ -138,7 +137,6 @@ struct AppState {
     HWND ledValue{};
     HWND applyLed{};
     HWND ledOff{};
-    HWND arucoStageCommand{};
     HWND arucoCaptureZero{};
     HWND arucoCaptureRotated{};
     HWND arucoCalculate{};
@@ -599,7 +597,8 @@ std::wstring build_controller_command(JobMode mode) {
         cmd << L" --aruco-prescan-capture --aruco-prescan-role rotated";
     } else if (mode == JobMode::ArucoCalculate) {
         cmd << L" --aruco-precalibration"
-            << L" --aruco-stage-command-value " << quote(get_text(g_app.arucoStageCommand));
+            << L" --aruco-stage-command-value 250"
+            << L" --aruco-intended-rotation-deg 180";
     }
 
     return cmd.str();
@@ -611,7 +610,6 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.projectOnly, !running);
     EnableWindow(g_app.singleCapture, !running);
     EnableWindow(g_app.continuousCapture, !running);
-    EnableWindow(g_app.arucoStageCommand, !running);
     EnableWindow(g_app.arucoCaptureZero, !running);
     EnableWindow(g_app.arucoCaptureRotated, !running);
     EnableWindow(g_app.arucoCalculate, !running);
@@ -1008,9 +1006,8 @@ void build_ui(HWND hwnd) {
 
     y += 42;
     make_label(hwnd, L"ArUco prescan", margin, y + 4, 90, 22);
-    make_label(hwnd, L"1) stage 0 > Capture 0   2) stage command", 110, y + 4, 285, 22);
-    g_app.arucoStageCommand = make_edit(hwnd, IDC_ARUCO_STAGE_COMMAND, L"250", 395, y, 55, 24);
-    make_label(hwnd, L"(nominal 180 deg) > Capture rotated > Calculate", 458, y + 4, 350, 22);
+    make_label(hwnd, L"1) stage 0 > Capture 0   2) stage command 250 (nominal 180 deg)", 110, y + 4, 460, 22);
+    make_label(hwnd, L"> Capture rotated > Calculate Alignment", 585, y + 4, 275, 22);
 
     y += 32;
     g_app.arucoCaptureZero = make_button(hwnd, IDC_ARUCO_CAPTURE_ZERO, L"Capture ArUco 0", margin, y, 145, 28);

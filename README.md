@@ -309,8 +309,8 @@ In the native `StructuredLightControlPanel.exe`, use the **ArUco prescan** contr
 before every 22 + 22 pattern scan:
 
 1. Turn the stage to 0 and click **Capture ArUco 0**.
-2. Send the stage's program command value (normally `250`, which is **not** an
-   angle and is intended to produce a physical 180-degree rotation), then click
+2. Send the stage's fixed program command value `250` (this is **not** an angle;
+   it is intended to produce a physical 180-degree rotation), then click
    **Capture ArUco rotated**.
 3. Click **Calculate Alignment**.
 
