@@ -30,6 +30,8 @@ constexpr wchar_t kAppClass[] = L"StructuredLightControlPanelWindow";
 constexpr UINT WM_APP_LOG = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
 constexpr UINT WM_APP_PATTERN_DONE = WM_APP + 3;
+constexpr UINT WM_APP_PREVIEW_DONE = WM_APP + 4;
+constexpr UINT_PTR kPreviewRefreshTimer = 1;
 
 enum ControlId {
     IDC_STATUS = 100,
@@ -119,6 +121,8 @@ struct AppState {
     HWND start{};
     HWND stop{};
     HWND preview{};
+    HWND previewImage{};
+    HWND previewInfo{};
     HWND projectOnly{};
     HWND singleCapture{};
     HWND continuousCapture{};
@@ -128,11 +132,20 @@ struct AppState {
     HWND applyLed{};
     HWND ledOff{};
     PROCESS_INFORMATION jobProcess{};
+    PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
     HANDLE jobPipeRead = nullptr;
     std::atomic_bool jobRunning{false};
+    std::atomic_bool previewRunning{false};
     std::atomic_bool patternUpdateRunning{false};
     int patternScaleBeforeUpdate = -1;
+    HBITMAP previewBitmap{};
+    FILETIME previewLastWrite{};
+    bool pendingJob = false;
+    JobMode pendingJobMode = JobMode::Scan;
+    std::wstring pendingJobLabel;
+    bool restartPreviewAfterStop = false;
+    bool closing = false;
     std::wstring root;
     std::wstring angleAdvanceFile;
     std::wstring jobLabel;
@@ -175,6 +188,43 @@ std::wstring runtime_dir() {
 
 std::wstring angle_advance_file() {
     return path_join(runtime_dir(), L"angle_advance.signal");
+}
+
+std::wstring gui_preview_file() {
+    return path_join(runtime_dir(), L"live_preview.bmp");
+}
+
+void set_text(HWND hwnd, const std::wstring& value);
+
+void refresh_gui_preview() {
+    if (!g_app.previewImage) return;
+
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    const std::wstring path = gui_preview_file();
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) return;
+    if (CompareFileTime(&attributes.ftLastWriteTime, &g_app.previewLastWrite) <= 0) return;
+
+    HBITMAP bitmap = static_cast<HBITMAP>(LoadImageW(
+        nullptr,
+        path.c_str(),
+        IMAGE_BITMAP,
+        0,
+        0,
+        LR_LOADFROMFILE | LR_CREATEDIBSECTION));
+    if (!bitmap) return;
+
+    HGDIOBJ oldBitmap = reinterpret_cast<HGDIOBJ>(SendMessageW(
+        g_app.previewImage, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(bitmap)));
+    if (oldBitmap) DeleteObject(oldBitmap);
+    g_app.previewBitmap = bitmap;
+    g_app.previewLastWrite = attributes.ftLastWriteTime;
+
+    BITMAP details{};
+    if (GetObjectW(bitmap, sizeof(details), &details) == sizeof(details)) {
+        set_text(
+            g_app.previewInfo,
+            L"Live XIMEA preview  " + std::to_wstring(details.bmWidth) + L" x " + std::to_wstring(details.bmHeight));
+    }
 }
 
 std::wstring get_text(HWND hwnd) {
@@ -513,6 +563,10 @@ std::wstring build_controller_command(JobMode mode) {
     append_optional_arg(cmd, L"--fps", g_app.fps);
     append_optional_arg(cmd, L"--trigger-mode", g_app.trigger);
     append_optional_arg(cmd, L"--image-format", g_app.imageFormat);
+    if (mode != JobMode::ProjectOnly) {
+        cmd << L" --gui-preview-file " << quote(gui_preview_file())
+            << L" --gui-preview-max-width 360";
+    }
 
     if (SendMessageW(g_app.windowed, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --windowed";
     if (SendMessageW(g_app.stretch, BM_GETCHECK, 0, 0) == BST_CHECKED) cmd << L" --stretch";
@@ -566,6 +620,13 @@ void wait_process_thread(HANDLE process) {
     DWORD exitCode = 0;
     GetExitCodeProcess(process, &exitCode);
     PostMessageW(g_app.window, WM_APP_DONE, exitCode, 0);
+}
+
+void wait_preview_process_thread(HANDLE process) {
+    WaitForSingleObject(process, INFINITE);
+    DWORD exitCode = 0;
+    GetExitCodeProcess(process, &exitCode);
+    PostMessageW(g_app.window, WM_APP_PREVIEW_DONE, exitCode, 0);
 }
 
 void wait_pattern_update_thread(HANDLE process) {
@@ -627,6 +688,76 @@ bool launch_job_process(
     return true;
 }
 
+bool start_background_preview() {
+    if (g_app.previewRunning.load() || g_app.closing) return false;
+
+    std::wstring controller = path_join(g_app.root, L"structured_light_pc_controller.py");
+    if (!file_exists(controller)) {
+        set_status(L"Controller Missing");
+        append_log(g_app.log, L"\r\n[preview] structured_light_pc_controller.py was not found.\r\n");
+        return false;
+    }
+
+    CreateDirectoryW(runtime_dir().c_str(), nullptr);
+    append_log(g_app.log, L"\r\n=== Starting embedded live preview ===\r\n");
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0)) {
+        append_log(g_app.log, L"\r\n[preview] Failed to create output pipe.\r\n");
+        return false;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writePipe;
+    si.hStdError = writePipe;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    ZeroMemory(&g_app.previewProcess, sizeof(g_app.previewProcess));
+    const std::wstring command = build_controller_command(JobMode::Preview);
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+    BOOL ok = CreateProcessW(
+        nullptr, mutableCommand.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+        nullptr, g_app.root.c_str(), &si, &g_app.previewProcess);
+    CloseHandle(writePipe);
+
+    if (!ok) {
+        CloseHandle(readPipe);
+        set_status(L"Preview Failed");
+        append_log(g_app.log, L"\r\n[preview] Failed to start Python controller.\r\n");
+        return false;
+    }
+
+    g_app.previewRunning.store(true);
+    set_status(L"Starting Preview");
+    std::thread(read_pipe_thread, readPipe).detach();
+    std::thread(wait_preview_process_thread, g_app.previewProcess.hProcess).detach();
+    return true;
+}
+
+void stop_background_preview() {
+    if (!g_app.previewRunning.load()) return;
+    TerminateProcess(g_app.previewProcess.hProcess, 130);
+    set_status(L"Switching Camera");
+}
+
+void restart_background_preview() {
+    if (g_app.jobRunning.load()) return;
+    if (g_app.previewRunning.load()) {
+        g_app.restartPreviewAfterStop = true;
+        stop_background_preview();
+    } else {
+        start_background_preview();
+    }
+}
+
 void start_job(JobMode mode, const std::wstring& label) {
     if (g_app.jobRunning.load()) return;
     if (g_app.patternUpdateRunning.load()) {
@@ -645,6 +776,15 @@ void start_job(JobMode mode, const std::wstring& label) {
     }
     if ((mode == JobMode::Scan || mode == JobMode::ProjectOnly) && !dir_exists(get_text(g_app.patterns))) {
         MessageBoxW(g_app.window, L"Pattern folder does not exist.", L"Missing Patterns", MB_ICONERROR);
+        return;
+    }
+
+    if (g_app.previewRunning.load()) {
+        g_app.pendingJob = true;
+        g_app.pendingJobMode = mode;
+        g_app.pendingJobLabel = label;
+        g_app.restartPreviewAfterStop = false;
+        stop_background_preview();
         return;
     }
 
@@ -919,7 +1059,7 @@ void build_ui(HWND hwnd) {
     y += 42;
     g_app.start = make_button(hwnd, IDC_START, L"Start Scan", margin, y, 115, 32);
     g_app.projectOnly = make_button(hwnd, IDC_PROJECT_ONLY, L"Project Only", 142, y, 115, 32);
-    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Preview", 270, y, 95, 32);
+    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Restart Preview", 270, y, 95, 32);
     g_app.singleCapture = make_button(hwnd, IDC_SINGLE_CAPTURE, L"Single Capture", 378, y, 120, 32);
     g_app.continuousCapture = make_button(hwnd, IDC_CONTINUOUS_CAPTURE, L"Continuous", 513, y, 115, 32);
     g_app.stop = make_button(hwnd, IDC_STOP, L"Stop", 643, y, 80, 32);
@@ -936,6 +1076,22 @@ void build_ui(HWND hwnd) {
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
         margin, y, 912, 350, hwnd, reinterpret_cast<HMENU>(IDC_LOG), g_app.instance, nullptr);
     SendMessageW(g_app.log, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+
+    make_label(hwnd, L"Live camera preview (starts automatically)", 950, 14, 360, 22);
+    g_app.previewImage = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"STATIC",
+        L"",
+        WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE,
+        950,
+        42,
+        360,
+        240,
+        hwnd,
+        nullptr,
+        g_app.instance,
+        nullptr);
+    g_app.previewInfo = make_label(hwnd, L"Waiting for XIMEA camera...", 950, 292, 360, 22);
 }
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -943,6 +1099,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_CREATE:
         g_app.window = hwnd;
         build_ui(hwnd);
+        SetTimer(hwnd, kPreviewRefreshTimer, 100, nullptr);
+        start_background_preview();
         return 0;
     case WM_COMMAND: {
         int id = LOWORD(wparam);
@@ -966,7 +1124,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             start_job(JobMode::Scan, L"scan");
             return 0;
         case IDC_PREVIEW:
-            start_job(JobMode::Preview, L"preview");
+            restart_background_preview();
             return 0;
         case IDC_PROJECT_ONLY:
             start_job(JobMode::ProjectOnly, L"project only");
@@ -1003,6 +1161,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             return 0;
         }
         break;
+    case WM_TIMER:
+        if (wparam == kPreviewRefreshTimer) {
+            refresh_gui_preview();
+            return 0;
+        }
+        break;
     case WM_APP_LOG: {
         auto* text = reinterpret_cast<std::wstring*>(lparam);
         if (text) {
@@ -1022,6 +1186,33 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
         set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        if (!g_app.closing) start_background_preview();
+        return 0;
+    }
+    case WM_APP_PREVIEW_DONE: {
+        DWORD exitCode = static_cast<DWORD>(wparam);
+        if (g_app.previewProcess.hThread) CloseHandle(g_app.previewProcess.hThread);
+        if (g_app.previewProcess.hProcess) CloseHandle(g_app.previewProcess.hProcess);
+        ZeroMemory(&g_app.previewProcess, sizeof(g_app.previewProcess));
+        g_app.previewRunning.store(false);
+
+        if (g_app.pendingJob) {
+            const JobMode mode = g_app.pendingJobMode;
+            const std::wstring label = g_app.pendingJobLabel;
+            g_app.pendingJob = false;
+            g_app.pendingJobLabel.clear();
+            start_job(mode, label);
+            return 0;
+        }
+        if (g_app.restartPreviewAfterStop) {
+            g_app.restartPreviewAfterStop = false;
+            start_background_preview();
+            return 0;
+        }
+        if (!g_app.closing && exitCode != 130) {
+            set_status(L"Preview Failed");
+            append_log(g_app.log, L"\r\n=== Live preview stopped unexpectedly with exit code " + std::to_wstring(exitCode) + L" ===\r\n");
+        }
         return 0;
     }
     case WM_APP_PATTERN_DONE: {
@@ -1048,15 +1239,28 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     case WM_CLOSE:
         if (g_app.jobRunning.load()) {
             if (MessageBoxW(hwnd, L"A job is running. Stop it and exit?", L"Exit", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
-            TerminateProcess(g_app.jobProcess.hProcess, 130);
         }
         if (g_app.patternUpdateRunning.load()) {
             if (MessageBoxW(hwnd, L"A pattern size update is running. Stop it and exit?", L"Exit", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
+        }
+        g_app.closing = true;
+        if (g_app.jobRunning.load()) {
+            TerminateProcess(g_app.jobProcess.hProcess, 130);
+        }
+        if (g_app.previewRunning.load()) {
+            TerminateProcess(g_app.previewProcess.hProcess, 130);
+        }
+        if (g_app.patternUpdateRunning.load()) {
             TerminateProcess(g_app.patternUpdateProcess.hProcess, 130);
         }
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        KillTimer(hwnd, kPreviewRefreshTimer);
+        if (g_app.previewBitmap) {
+            DeleteObject(g_app.previewBitmap);
+            g_app.previewBitmap = nullptr;
+        }
         PostQuitMessage(0);
         return 0;
     default:
@@ -1089,7 +1293,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         0, kAppClass, L"PRO4500 XIMEA UV Scan Controller",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 960, 800,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 800,
         nullptr, nullptr, instance, nullptr);
 
     if (!hwnd) return 1;

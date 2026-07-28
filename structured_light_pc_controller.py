@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -476,6 +477,59 @@ def preview_image(cv2, image: Any) -> Any:
     return image
 
 
+class GuiPreviewPublisher:
+    """Publish a compact BMP frame that the native control panel can display.
+
+    The file replacement is atomic, so the GUI will always either see the
+    previous complete frame or the new complete frame.  This keeps camera I/O
+    in this process: the GUI never needs to open a competing XIMEA handle.
+    """
+
+    def __init__(self, cv2, output_path: Path | None, max_width: int) -> None:
+        self.cv2 = cv2
+        self.output_path = output_path.resolve() if output_path is not None else None
+        self.max_width = max(64, int(max_width))
+        self.temp_path = (
+            self.output_path.with_name(self.output_path.stem + ".writing.bmp")
+            if self.output_path is not None
+            else None
+        )
+
+    def publish(self, image: Any) -> None:
+        if self.output_path is None or self.temp_path is None:
+            return
+
+        preview = preview_image(self.cv2, image)
+        height, width = preview.shape[:2]
+        if width > self.max_width:
+            scaled_height = max(1, round(height * self.max_width / width))
+            preview = self.cv2.resize(
+                preview,
+                (self.max_width, scaled_height),
+                interpolation=self.cv2.INTER_AREA,
+            )
+        if len(preview.shape) == 3 and preview.shape[2] == 3:
+            # xiAPI RGB data is RGB; OpenCV encoders expect BGR channel order.
+            preview = self.cv2.cvtColor(preview, self.cv2.COLOR_RGB2BGR)
+
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        ok, encoded = self.cv2.imencode(".bmp", preview)
+        if not ok:
+            raise RuntimeError("cv2.imencode failed for GUI preview BMP")
+        self.temp_path.write_bytes(encoded.tobytes())
+        # A GUI image load can briefly hold the old bitmap open on Windows.
+        # Preview delivery must never interrupt a real scan, so skip just this
+        # display update if the replacement remains temporarily locked.
+        for attempt in range(3):
+            try:
+                os.replace(self.temp_path, self.output_path)
+                return
+            except PermissionError:
+                if attempt == 2:
+                    return
+                time.sleep(0.02)
+
+
 def camera_overrides(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "provider": args.camera_provider,
@@ -934,6 +988,7 @@ def relative_to_scan(path: Path, scan_dir: Path) -> str:
 
 def run_scan(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     pattern_dir = args.patterns.resolve()
     patterns = load_pattern_specs(pattern_dir, legacy_14_patterns=args.legacy_14_patterns)
     first_image = pattern_image(cv2, patterns[0])
@@ -1094,6 +1149,8 @@ def run_scan(args: argparse.Namespace) -> int:
                                         "gain_db": bracket.gain_db,
                                     },
                                 )
+
+                            gui_preview.publish(frame.image)
 
                             size_bytes = 0
                             if exposure_path is not None:
@@ -1371,17 +1428,24 @@ def run_project_only(args: argparse.Namespace) -> int:
 
 def run_preview(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     camera: CameraInterface | None = None
     try:
         camera, _settings = open_camera(args)
-        cv2.namedWindow(args.preview_window_name, cv2.WINDOW_NORMAL)
-        print("[preview] running. Press ESC or q in the preview window to stop.", flush=True)
+        show_opencv_window = args.gui_preview_file is None
+        if show_opencv_window:
+            cv2.namedWindow(args.preview_window_name, cv2.WINDOW_NORMAL)
+            print("[preview] running. Press ESC or q in the preview window to stop.", flush=True)
+        else:
+            print("[preview] publishing frames to the control panel.", flush=True)
         while True:
             frame = camera.capture_frame()
-            cv2.imshow(args.preview_window_name, preview_image(cv2, frame.image))
-            key = cv2.waitKey(1) & 0xFF
-            if key in {27, ord("q")}:
-                break
+            gui_preview.publish(frame.image)
+            if show_opencv_window:
+                cv2.imshow(args.preview_window_name, preview_image(cv2, frame.image))
+                key = cv2.waitKey(1) & 0xFF
+                if key in {27, ord("q")}:
+                    break
     except CameraError as exc:
         print(f"[camera] ERROR: {exc}", flush=True)
         return 1
@@ -1389,18 +1453,21 @@ def run_preview(args: argparse.Namespace) -> int:
         if camera is not None:
             camera.stop()
             camera.close()
-        cv2.destroyAllWindows()
+        if args.gui_preview_file is None:
+            cv2.destroyAllWindows()
     return 0
 
 
 def run_single_capture(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     camera: CameraInterface | None = None
     try:
         camera, _settings = open_camera(args)
         scan_id = safe_scan_id(args.scan_id or datetime.now().strftime("single_%Y%m%d_%H%M%S"))
         output_dir = args.output.resolve() / scan_id
         frame = camera.capture_frame()
+        gui_preview.publish(frame.image)
         filename = capture_filename(
             scan_id=scan_id,
             angle_deg=None,
@@ -1438,6 +1505,7 @@ def run_single_capture(args: argparse.Namespace) -> int:
 
 def run_continuous_capture(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     camera: CameraInterface | None = None
     count = max(0, int(args.continuous_capture))
     try:
@@ -1455,6 +1523,7 @@ def run_continuous_capture(args: argparse.Namespace) -> int:
         )
         while count == 0 or index < count:
             frame = camera.capture_frame()
+            gui_preview.publish(frame.image)
             filename = capture_filename(
                 scan_id=scan_id,
                 angle_deg=None,
@@ -1585,6 +1654,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-format", default=".png", type=normalize_suffix)
 
     parser.add_argument("--preview", action="store_true")
+    parser.add_argument(
+        "--gui-preview-file",
+        type=Path,
+        help="Write the latest camera frame as a BMP for the native control panel.",
+    )
+    parser.add_argument(
+        "--gui-preview-max-width",
+        default=360,
+        type=int,
+        help="Maximum width of the control-panel preview bitmap.",
+    )
     parser.add_argument("--project-only", action="store_true")
     parser.add_argument("--project-repeat", default=1, type=int)
     parser.add_argument("--single-capture", action="store_true")
