@@ -871,16 +871,16 @@ void apply_pattern_size() {
     } catch (...) {
         MessageBoxW(
             g_app.window,
-            L"Pattern size must be a whole number from 1 to 100.",
-            L"Invalid Pattern Size",
+            L"Pattern width must be a whole number from 1 to 100.",
+            L"Invalid Pattern Width",
             MB_ICONWARNING);
         return;
     }
     if (percent < 1 || percent > 100) {
         MessageBoxW(
             g_app.window,
-            L"Pattern size must be between 1 and 100 percent.",
-            L"Invalid Pattern Size",
+            L"Pattern width must be between 1 and 100 percent.",
+            L"Invalid Pattern Width",
             MB_ICONWARNING);
         return;
     }
@@ -979,7 +979,7 @@ void build_ui(HWND hwnd) {
         y,
         400,
         24);
-    make_label(hwnd, L"Size (%)", 525, y + 4, 65, 22);
+    make_label(hwnd, L"Width (%)", 525, y + 4, 65, 22);
     const int detectedPatternScale =
         detect_pattern_scale_percent(defaultPatternDirectory);
     const std::wstring initialPatternScale = detectedPatternScale > 0
@@ -997,7 +997,7 @@ void build_ui(HWND hwnd) {
     g_app.applyPatternScale = make_button(
         hwnd,
         IDC_APPLY_PATTERN_SCALE,
-        L"Apply Size",
+        L"Apply Width",
         660,
         y,
         150,

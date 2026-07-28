@@ -51,10 +51,10 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
 - `prepare_pc_python_env.ps1`: `.venv-pc` 생성 및 Python 패키지 설치.
 - `build.bat` / `PRO4500.cpp`: 기존의 간단한 PRO4500 투사/LED 유틸리티.
 - `GUI/`: 빌드에 사용되는 TI LightCrafter 4500 API와 HIDAPI 소스.
-- `generate_centered_patterns.ps1`: 원본 패턴을 중앙 10% 크기로 축소하고
-  나머지를 검정으로 채우는 생성 스크립트.
-- `generated_patterns_centered/`: 화면 해상도는 유지하고 중앙 10% 영역에만
-  표시되는 0..21번 패턴 이미지.
+- `generate_centered_patterns.ps1`: 원본 패턴의 세로 높이는 유지하고, 가로만
+  중앙 비율로 축소하며 나머지를 검정으로 채우는 생성 스크립트.
+- `generated_patterns_centered/`: 화면 해상도와 세로 높이는 유지하고, 중앙의
+  가로 영역에만 표시되는 0..21번 패턴 이미지.
 
 중앙 패턴 폴더를 다시 생성하려면 다음 명령을 실행합니다.
 
@@ -63,15 +63,15 @@ powershell -ExecutionPolicy Bypass -File .\generate_centered_patterns.ps1
 ```
 
 `StructuredLightControlPanel.exe`에서는 `Patterns`에 출력 폴더를 지정하고
-`Size (%)`에 1~100 사이의 정수를 입력한 뒤 `Apply Size`를 누르면 같은 작업을
+`Width (%)`에 1~100 사이의 정수를 입력한 뒤 `Apply Width`를 누르면 같은 작업을
 GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 유지하면서 중앙
-50%×50% 영역에만 패턴을 배치하고 바깥을 검정으로 채웁니다. 14~21번 inverse
+가로 50%×세로 100% 영역에만 패턴을 배치하고 가로 바깥을 검정으로 채웁니다. 14~21번 inverse
 패턴도 함께 다시 생성됩니다. 크기를 반복 변경해도 누적 축소되지 않도록 항상
-`generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Size`는 패턴 파일만
+`generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Width`는 패턴 파일만
 변경하며 스캔이나 투사를 시작하지 않습니다. 상태가 `Patterns Updated`로 바뀐
 뒤 `Start Scan` 또는 `Project Only`를 별도로 실행합니다.
 GUI를 시작하거나 `Patterns` 폴더를 변경하면 `00_White.bmp`의 실제 활성 영역을
-읽어 현재 크기를 `Size (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
+읽어 현재 가로 비율을 `Width (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
 이미지를 다시 확인해 표시값을 즉시 갱신합니다.
 
 ## XIMEA SDK 요구 사항
