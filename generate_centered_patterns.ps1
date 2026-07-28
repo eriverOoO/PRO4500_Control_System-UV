@@ -31,9 +31,9 @@ public static class CenteredPatternWriter
             int activeWidth = Math.Max(
                 1,
                 (int)Math.Round(source.Width * scale, MidpointRounding.AwayFromZero));
-            int activeHeight = Math.Max(
-                1,
-                (int)Math.Round(source.Height * scale, MidpointRounding.AwayFromZero));
+            // The UI scale controls projected width only.  Preserve the full
+            // source height so a 70% setting produces a 70% x 100% pattern.
+            int activeHeight = source.Height;
             int offsetX = (source.Width - activeWidth) / 2;
             int offsetY = (source.Height - activeHeight) / 2;
 
@@ -167,6 +167,6 @@ for ($grayIndex = 0; $grayIndex -lt $inverseLabels.Count; $grayIndex++) {
 }
 
 Write-Host (
-    "[ok] Centered patterns use {0:P0} of the original width and height: {1}" -f
+    "[ok] Centered patterns use {0:P0} of the original width and 100% of the original height: {1}" -f
         $Scale,
         $outputPath)

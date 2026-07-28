@@ -44,6 +44,12 @@ enum ControlId {
     IDC_SETTLE,
     IDC_EXPOSURE,
     IDC_GAIN,
+    IDC_SHORT_EXPOSURE,
+    IDC_SHORT_GAIN,
+    IDC_MID_EXPOSURE,
+    IDC_MID_GAIN,
+    IDC_LONG_EXPOSURE,
+    IDC_LONG_GAIN,
     IDC_FPS,
     IDC_TRIGGER,
     IDC_IMAGE_FORMAT,
@@ -94,6 +100,12 @@ struct AppState {
     HWND settle{};
     HWND exposure{};
     HWND gain{};
+    HWND shortExposure{};
+    HWND shortGain{};
+    HWND midExposure{};
+    HWND midGain{};
+    HWND longExposure{};
+    HWND longGain{};
     HWND fps{};
     HWND trigger{};
     HWND imageFormat{};
@@ -416,11 +428,8 @@ int detect_pattern_scale_percent(const std::wstring& patternDirectory) {
 
     if (maxX < minX || maxY < minY) return -1;
     const int activeWidth = maxX - minX + 1;
-    const int activeHeight = maxY - minY + 1;
     const int widthPercent = (activeWidth * 100 + width / 2) / width;
-    const int heightPercent = (activeHeight * 100 + height / 2) / height;
-    if (std::abs(widthPercent - heightPercent) > 1) return -1;
-    return std::clamp((widthPercent + heightPercent + 1) / 2, 1, 100);
+    return std::clamp(widthPercent, 1, 100);
 }
 
 void refresh_pattern_scale_display() {
@@ -495,6 +504,12 @@ std::wstring build_controller_command(JobMode mode) {
     append_optional_arg(cmd, L"--camera-device-index", g_app.deviceIndex);
     append_optional_arg(cmd, L"--exposure-us", g_app.exposure);
     append_optional_arg(cmd, L"--gain-db", g_app.gain);
+    append_optional_arg(cmd, L"--short-exposure-us", g_app.shortExposure);
+    append_optional_arg(cmd, L"--short-gain-db", g_app.shortGain);
+    append_optional_arg(cmd, L"--mid-exposure-us", g_app.midExposure);
+    append_optional_arg(cmd, L"--mid-gain-db", g_app.midGain);
+    append_optional_arg(cmd, L"--long-exposure-us", g_app.longExposure);
+    append_optional_arg(cmd, L"--long-gain-db", g_app.longGain);
     append_optional_arg(cmd, L"--fps", g_app.fps);
     append_optional_arg(cmd, L"--trigger-mode", g_app.trigger);
     append_optional_arg(cmd, L"--image-format", g_app.imageFormat);
@@ -770,7 +785,7 @@ void apply_pattern_size() {
     append_log(
         g_app.log,
         L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
-            + L"% x " + std::to_wstring(percent) + L"% in " + output + L"\r\n");
+            + L"% width x 100% height in " + output + L"\r\n");
     g_app.patternScaleBeforeUpdate = detect_pattern_scale_percent(output);
     if (!launch_pattern_update_process(command.str())
         && g_app.patternScaleBeforeUpdate > 0) {
@@ -861,11 +876,11 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Device", 198, y + 4, 55, 22);
     g_app.deviceIndex = make_edit(hwnd, IDC_DEVICE_INDEX, L"0", 252, y, 50, 24);
     make_label(hwnd, L"Exposure us", 325, y + 4, 85, 22);
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"10000", 410, y, 90, 24);
-    make_label(hwnd, L"Gain dB", 525, y + 4, 60, 22);
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"20000", 410, y, 90, 24);
+    make_label(hwnd, L"Gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
-    g_app.fps = make_edit(hwnd, IDC_FPS, L"15.0", 715, y, 70, 24);
+    g_app.fps = make_edit(hwnd, IDC_FPS, L"10.0", 715, y, 70, 24);
     make_label(hwnd, L"Trigger", 805, y + 4, 60, 22);
     g_app.trigger = make_edit(hwnd, IDC_TRIGGER, L"software", 865, y, 70, 24);
 
@@ -877,22 +892,27 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Angles", 340, y + 4, 55, 22);
     g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
-    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"300", 655, y, 80, 24);
+    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"500", 655, y, 80, 24);
 
     y += 34;
-    make_label(
-        hwnd,
-        L"Capture mode: fixed single exposure (one trigger per pattern)",
-        margin,
-        y + 4,
-        500,
-        22);
+    make_label(hwnd, L"HDR low us", margin, y + 4, 82, 22);
+    g_app.shortExposure = make_edit(hwnd, IDC_SHORT_EXPOSURE, L"2500", 105, y, 78, 24);
+    make_label(hwnd, L"dB", 190, y + 4, 24, 22);
+    g_app.shortGain = make_edit(hwnd, IDC_SHORT_GAIN, L"0.0", 215, y, 54, 24);
+    make_label(hwnd, L"mid us", 295, y + 4, 55, 22);
+    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"14000", 350, y, 78, 24);
+    make_label(hwnd, L"dB", 435, y + 4, 24, 22);
+    g_app.midGain = make_edit(hwnd, IDC_MID_GAIN, L"0.0", 460, y, 54, 24);
+    make_label(hwnd, L"high us", 540, y + 4, 60, 22);
+    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"80000", 605, y, 78, 24);
+    make_label(hwnd, L"dB", 690, y + 4, 24, 22);
+    g_app.longGain = make_edit(hwnd, IDC_LONG_GAIN, L"0.0", 715, y, 54, 24);
 
     y += 34;
     g_app.windowed = make_checkbox(hwnd, IDC_WINDOWED, L"Windowed projection", margin, y, 170, 24, false);
     g_app.stretch = make_checkbox(hwnd, IDC_STRETCH, L"Stretch patterns", 205, y, 140, 24, false);
     g_app.pauseFirst = make_checkbox(hwnd, IDC_PAUSE_FIRST, L"Pause before first angle", 370, y, 190, 24, false);
-    g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, false);
+    g_app.saveAllImages = make_checkbox(hwnd, IDC_SAVE_ALL_IMAGES, L"Save All", 590, y, 100, 24, true);
     make_label(hwnd, L"Project repeat", 705, y + 4, 95, 22);
     g_app.projectRepeat = make_edit(hwnd, IDC_PROJECT_REPEAT, L"1", 805, y, 50, 24);
 
