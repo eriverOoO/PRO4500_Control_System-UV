@@ -4,14 +4,21 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 20000,
+      "exposure_us": 10000000,
       "gain_db": 0.0,
       "fps": 10.0,
       "trigger_mode": "software",
       "image_format": "mono8",
-      "timeout_ms": 5000,
+      "timeout_ms": 15000,
       "width": 0,
-      "height": 0
+      "height": 0,
+      "aruco_prescan": {
+        "exposure_us": 200000,
+        "gain_db": 0.0,
+        "fps": 50.32,
+        "trigger_mode": "off",
+        "image_format": "mono8"
+      }
     },
     "mock": {
       "width": 1280,

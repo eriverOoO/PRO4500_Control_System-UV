@@ -563,8 +563,36 @@ def camera_overrides(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def open_camera(args: argparse.Namespace) -> tuple[CameraInterface, CameraSettings]:
-    settings = CameraProvider.load_settings(args.camera_config, camera_overrides(args))
+def aruco_prescan_camera_profile(args: argparse.Namespace) -> dict[str, Any]:
+    """Load the XIMEA-only settings that reproduce the validated CamTool view."""
+    config = read_json_file(args.camera_config)
+    camera = config.get("camera", {})
+    ximea = camera.get("ximea", {}) if isinstance(camera, dict) else {}
+    profile = ximea.get("aruco_prescan", {}) if isinstance(ximea, dict) else {}
+    if not isinstance(profile, dict):
+        raise ValueError("camera.ximea.aruco_prescan must be an object")
+    return {
+        name: profile[name]
+        for name in ("exposure_us", "gain_db", "fps", "trigger_mode", "image_format", "timeout_ms")
+        if name in profile
+    }
+
+
+def open_camera(
+    args: argparse.Namespace,
+    *,
+    exposure_us: int | None = None,
+    profile_overrides: dict[str, Any] | None = None,
+) -> tuple[CameraInterface, CameraSettings]:
+    overrides = camera_overrides(args)
+    # A mode-specific profile takes precedence over common GUI camera controls.
+    # This keeps the main scan's software trigger and HDR operation independent.
+    overrides.update(profile_overrides or {})
+    if exposure_us is not None:
+        if exposure_us < 1:
+            raise ValueError("ArUco exposure must be at least 1 microsecond")
+        overrides["exposure_us"] = exposure_us
+    settings = CameraProvider.load_settings(args.camera_config, overrides)
     camera = CameraProvider.create(settings)
     camera.open()
     camera.start()
@@ -1241,7 +1269,16 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
     camera: CameraInterface | None = None
     try:
         marker_ids = parse_aruco_ids(args.aruco_ids)
-        camera, _settings = open_camera(args)
+        camera, settings = open_camera(
+            args,
+            exposure_us=args.aruco_exposure_us,
+            profile_overrides=aruco_prescan_camera_profile(args),
+        )
+        print(
+            f"[aruco] profile exposure={settings.exposure_us}us gain={settings.gain_db:g}dB "
+            f"trigger={settings.trigger_mode} fps={settings.fps:g} format={settings.image_format}",
+            flush=True,
+        )
         frame = camera.capture_frame()
         gui_preview.publish(frame.image)
         markers, selected_ids = require_aruco_markers(
@@ -1261,6 +1298,8 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             "requested_marker_ids": marker_ids,
             "selected_marker_ids": selected_ids,
             "detected_ids": sorted(markers),
+            "exposure_us": settings.exposure_us,
+            "gain_db": settings.gain_db,
             "camera_timestamp_ms": frame.timestamp_ms,
             "camera_frame_index": frame.frame_index,
         }
@@ -2218,6 +2257,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check-camera", action="store_true")
     parser.add_argument("--aruco-prescan-capture", action="store_true")
     parser.add_argument("--aruco-prescan-role", choices=("zero", "rotated"))
+    parser.add_argument(
+        "--aruco-exposure-us",
+        type=int,
+        help="Exposure used only for no-pattern ArUco prescan captures.",
+    )
     parser.add_argument("--aruco-precalibration", action="store_true")
     parser.add_argument("--aruco-dictionary", choices=sorted(ARUCO_DICTIONARIES), default="DICT_4X4_50")
     parser.add_argument("--aruco-ids", default="0,1,2,3")

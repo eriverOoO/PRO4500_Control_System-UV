@@ -79,6 +79,7 @@ enum ControlId {
     IDC_ARUCO_CAPTURE_ZERO,
     IDC_ARUCO_CAPTURE_ROTATED,
     IDC_ARUCO_CALCULATE,
+    IDC_ARUCO_EXPOSURE,
 };
 
 enum class JobMode {
@@ -140,6 +141,7 @@ struct AppState {
     HWND arucoCaptureZero{};
     HWND arucoCaptureRotated{};
     HWND arucoCalculate{};
+    HWND arucoExposure{};
     PROCESS_INFORMATION jobProcess{};
     PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
@@ -593,8 +595,10 @@ std::wstring build_controller_command(JobMode mode) {
         cmd << L" --continuous-capture " << quote(L"0");
     } else if (mode == JobMode::ArucoCaptureZero) {
         cmd << L" --aruco-prescan-capture --aruco-prescan-role zero";
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     } else if (mode == JobMode::ArucoCaptureRotated) {
         cmd << L" --aruco-prescan-capture --aruco-prescan-role rotated";
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     } else if (mode == JobMode::ArucoCalculate) {
         cmd << L" --aruco-precalibration"
             << L" --aruco-stage-command-value 250"
@@ -1013,6 +1017,8 @@ void build_ui(HWND hwnd) {
     g_app.arucoCaptureZero = make_button(hwnd, IDC_ARUCO_CAPTURE_ZERO, L"Capture ArUco 0", margin, y, 145, 28);
     g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture ArUco rotated", 170, y, 175, 28);
     g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Calculate Alignment", 360, y, 160, 28);
+    make_label(hwnd, L"ArUco exposure us", 545, y + 4, 120, 22);
+    g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"200000", 670, y, 100, 24);
 
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
@@ -1063,7 +1069,10 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Device", 198, y + 4, 55, 22);
     g_app.deviceIndex = make_edit(hwnd, IDC_DEVICE_INDEX, L"0", 252, y, 50, 24);
     make_label(hwnd, L"Exposure us", 325, y + 4, 85, 22);
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"20000", 410, y, 90, 24);
+    // This base exposure is used by the embedded live view and no-pattern ArUco
+    // prescans. HDR scan brackets below are applied separately for the main scan.
+    // The unlit stage needs a long exposure for its printed markers to be visible.
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"10000000", 410, y, 90, 24);
     make_label(hwnd, L"Gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
