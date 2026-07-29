@@ -4,7 +4,7 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 10000000,
+      "exposure_us": 20000,
       "gain_db": 0.0,
       "fps": 10.0,
       "trigger_mode": "software",
@@ -12,12 +12,25 @@
       "timeout_ms": 15000,
       "width": 0,
       "height": 0,
+      "preview": {
+        "exposure_us": 200000,
+        "gain_db": 0.0,
+        "fps": 50.32,
+        "trigger_mode": "off",
+        "image_format": "mono8"
+      },
       "aruco_prescan": {
         "exposure_us": 200000,
         "gain_db": 0.0,
         "fps": 50.32,
         "trigger_mode": "off",
         "image_format": "mono8"
+      },
+      "aruco_stability_check": {
+        "enabled": true,
+        "max_center_shift_px": 20.0,
+        "max_rotation_deg": 2.0,
+        "max_scale_deviation": 0.03
       }
     },
     "mock": {
@@ -34,6 +47,7 @@
       "saturated_threshold": 250,
       "dark_threshold": 5,
       "black_offset": 0.0,
+      "selection_headroom_threshold": 235,
       "brackets": [
         {
           "name": "short",
@@ -51,6 +65,15 @@
           "gain_db": 0.0
         }
       ]
+    },
+    "quality_gate": {
+      "enabled": true,
+      "white_black_min_contrast_u8": 20.0,
+      "gray_pair_min_valid_ratio": 0.05,
+      "sine_min_modulation_u8": 12.0,
+      "sine_min_valid_ratio": 0.05,
+      "max_decoder_saturation_ratio": 0.2,
+      "max_decoder_dark_ratio": 0.8
     },
     "metadata": {
       "scan_type": "object",

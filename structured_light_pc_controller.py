@@ -123,6 +123,7 @@ class HdrConfig:
     saturated_threshold: int
     dark_threshold: int
     black_offset: float
+    selection_headroom_threshold: int
     brackets: tuple[ExposureBracket, ...]
 
 
@@ -142,10 +143,27 @@ class RigMetadata:
 class CaptureConfig:
     hdr: HdrConfig
     rig: RigMetadata
+    quality_gate: "QualityGateConfig"
+
+
+@dataclass(frozen=True)
+class QualityGateConfig:
+    enabled: bool
+    white_black_min_contrast_u8: float
+    gray_pair_min_valid_ratio: float
+    sine_min_modulation_u8: float
+    sine_min_valid_ratio: float
+    max_decoder_saturation_ratio: float
+    max_decoder_dark_ratio: float
 
 
 def now_ms() -> int:
     return time.time_ns() // 1_000_000
+
+
+def effective_pattern_settle_ms(args: argparse.Namespace) -> int:
+    """Keep physical projector transitions out of the camera exposure window."""
+    return max(1000, int(args.settle_ms))
 
 
 def import_cv2():
@@ -416,6 +434,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     config = read_json_file(args.camera_config)
     capture_section = config.get("capture", {})
     hdr_section = capture_section.get("hdr", {})
+    quality_section = capture_section.get("quality_gate", {})
     metadata_section = capture_section.get("metadata", {})
 
     bracket_items = hdr_section.get("brackets", [])
@@ -462,6 +481,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             saturated_threshold=int(hdr_section.get("saturated_threshold", 250)),
             dark_threshold=int(hdr_section.get("dark_threshold", 5)),
             black_offset=float(hdr_section.get("black_offset", 0.0)),
+            selection_headroom_threshold=int(hdr_section.get("selection_headroom_threshold", 235)),
             brackets=tuple(brackets),
         ),
         rig=RigMetadata(
@@ -473,6 +493,19 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             calibration_id=str(args.calibration_id if args.calibration_id is not None else metadata_section.get("calibration_id", "")),
             projector_brightness=str(args.projector_brightness if args.projector_brightness is not None else metadata_section.get("projector_brightness", "")),
             keystone_predistortion=keystone_predistortion,
+        ),
+        quality_gate=QualityGateConfig(
+            enabled=(
+                args.quality_gate
+                if args.quality_gate is not None
+                else parse_bool(quality_section.get("enabled"), True)
+            ),
+            white_black_min_contrast_u8=float(quality_section.get("white_black_min_contrast_u8", 20.0)),
+            gray_pair_min_valid_ratio=float(quality_section.get("gray_pair_min_valid_ratio", 0.05)),
+            sine_min_modulation_u8=float(quality_section.get("sine_min_modulation_u8", 12.0)),
+            sine_min_valid_ratio=float(quality_section.get("sine_min_valid_ratio", 0.05)),
+            max_decoder_saturation_ratio=float(quality_section.get("max_decoder_saturation_ratio", 0.20)),
+            max_decoder_dark_ratio=float(quality_section.get("max_decoder_dark_ratio", 0.80)),
         ),
     )
 
@@ -571,6 +604,20 @@ def aruco_prescan_camera_profile(args: argparse.Namespace) -> dict[str, Any]:
     profile = ximea.get("aruco_prescan", {}) if isinstance(ximea, dict) else {}
     if not isinstance(profile, dict):
         raise ValueError("camera.ximea.aruco_prescan must be an object")
+    return {
+        name: profile[name]
+        for name in ("exposure_us", "gain_db", "fps", "trigger_mode", "image_format", "timeout_ms")
+        if name in profile
+    }
+
+
+def preview_camera_profile(args: argparse.Namespace) -> dict[str, Any]:
+    config = read_json_file(args.camera_config)
+    camera = config.get("camera", {})
+    ximea = camera.get("ximea", {}) if isinstance(camera, dict) else {}
+    profile = ximea.get("preview", {}) if isinstance(ximea, dict) else {}
+    if not isinstance(profile, dict):
+        raise ValueError("camera.ximea.preview must be an object")
     return {
         name: profile[name]
         for name in ("exposure_us", "gain_db", "fps", "trigger_mode", "image_format", "timeout_ms")
@@ -926,13 +973,26 @@ def synthesize_frame(cv2, pattern: Any, bracket: ExposureBracket, hdr: HdrConfig
     return simulated.astype(gray.dtype)
 
 
+def to_decoder_u8(image: Any):
+    """Use the same 0..255 domain the decoder uses for mono PNG inputs."""
+    import numpy as np  # type: ignore
+
+    array = np.asarray(image)
+    if array.dtype == np.uint16:
+        return np.rint(array.astype(np.float32) * (255.0 / 65535.0)).astype(np.uint8)
+    if array.dtype != np.uint8:
+        maximum = float(np.max(array)) if array.size else 1.0
+        return np.clip(array.astype(np.float32) * (255.0 / max(1.0, maximum)), 0, 255).astype(np.uint8)
+    return array
+
+
 def merge_hdr_frames(
     cv2,
     frames: list[Any],
     brackets: tuple[ExposureBracket, ...],
     hdr: HdrConfig,
     black_offsets: list[float] | None = None,
-) -> tuple[Any, Any, Any, dict[str, Any]]:
+) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
     import numpy as np  # type: ignore
 
     if not frames:
@@ -947,6 +1007,10 @@ def merge_hdr_frames(
     stack = np.stack(gray_frames, axis=0)
     sensor_max = dtype_max(gray_frames[0])
     saturated_threshold = min(sensor_max, scale_threshold(hdr.saturated_threshold, sensor_max))
+    selection_threshold = min(
+        saturated_threshold,
+        scale_threshold(hdr.selection_headroom_threshold, sensor_max),
+    )
     dark_threshold = min(sensor_max, scale_threshold(hdr.dark_threshold, sensor_max))
     if black_offsets is None:
         black_offsets = [hdr.black_offset] * len(frames)
@@ -960,7 +1024,9 @@ def merge_hdr_frames(
     chosen = np.full(first_shape, int(priority[0]), dtype=np.int32)
     any_valid = np.zeros(first_shape, dtype=bool)
     for index in priority:
-        valid = (corrected_stack[index] > dark_threshold) & (stack[index] < saturated_threshold)
+        # Keep headroom below hard sensor clipping.  Near-clip pixels are taken
+        # from a shorter bracket, protecting White/Black and inverse-Gray contrast.
+        valid = (corrected_stack[index] > dark_threshold) & (stack[index] < selection_threshold)
         chosen[valid] = int(index)
         any_valid |= valid
 
@@ -977,24 +1043,33 @@ def merge_hdr_frames(
 
     saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
     dark_mask = np.all(corrected_stack <= dark_threshold, axis=0).astype(np.uint8) * 255
+    selected_bracket_map = chosen.astype(np.uint8)
+    merged_u8 = to_decoder_u8(merged)
 
     report = {
         "algorithm": "longest_unsaturated_radiance_normalized",
         "output_bit_depth": hdr.output_bit_depth,
         "saturated_threshold": int(saturated_threshold),
+        "selection_headroom_threshold": int(selection_threshold),
         "dark_threshold": int(dark_threshold),
         "black_offsets": [float(value) for value in black_offsets],
         "saturated_pixel_count": int(np.count_nonzero(saturated_mask)),
+        "decoder_near_white_pixel_count": int(np.count_nonzero(merged_u8 >= hdr.saturated_threshold)),
+        "decoder_near_black_pixel_count": int(np.count_nonzero(merged_u8 <= hdr.dark_threshold)),
         "dark_pixel_count": int(np.count_nonzero(dark_mask)),
         "invalid_pixel_count": int(np.size(any_valid) - np.count_nonzero(any_valid)),
         "input_dtype": str(gray_frames[0].dtype),
         "input_shape": [int(first_shape[0]), int(first_shape[1])],
         "bracket_priority": [brackets[int(index)].name for index in priority],
+        "selected_bracket_pixel_counts": {
+            brackets[index].name: int(np.count_nonzero(selected_bracket_map == index))
+            for index in range(len(brackets))
+        },
     }
-    return merged, saturated_mask, dark_mask, report
+    return merged, saturated_mask, dark_mask, selected_bracket_map, report
 
 
-def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, dict[str, Any]]:
+def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
     import numpy as np  # type: ignore
 
     output = to_grayscale(cv2, frame).copy()
@@ -1016,7 +1091,7 @@ def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, dict[
         "input_shape": [int(output.shape[0]), int(output.shape[1])],
         "bracket_priority": ["single"],
     }
-    return output, masks, masks.copy(), report
+    return output, masks, masks.copy(), masks.copy(), report
 
 
 def validate_decode_outputs(folder: Path, expected_ids: tuple[int, ...]) -> list[int]:
@@ -1295,6 +1370,7 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
             "homography": np.asarray(matrix, dtype=float).tolist(),
             "matrix": np.asarray(matrix, dtype=float).tolist(),
             "transform_kind": "homography",
+            "transform_direction": "180_to_0",
             "source": {"role": "stage-rotated", "image": str(rotated_path)},
             "target": {"role": "stage-0", "image": str(zero_path)},
             "aruco": {
@@ -1317,6 +1393,7 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
                 "rotation_center_target_xy": center,
                 "similarity_scale": scale,
                 "usage": "Maps the nominal-180-degree structured-light scan into the 0-degree scan.",
+                "transform_direction": "180_to_0",
             },
         }
         output_path = aruco_prescan_dir(output_root) / "stage_precalibration.json"
@@ -1330,6 +1407,323 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
     except (RuntimeError, ValueError) as exc:
         print(f"[aruco] ERROR: {exc}", flush=True)
         return 1
+
+
+def verify_aruco_prescan_stability(args: argparse.Namespace) -> dict[str, Any]:
+    """Reject a stale 0-degree prescan before main capture if the rig moved."""
+    import numpy as np  # type: ignore
+
+    if args.dry_run or args.no_camera:
+        return {"status": "skipped", "reason": "synthetic capture"}
+    config = read_json_file(args.camera_config)
+    ximea = config.get("camera", {}).get("ximea", {})
+    limits = ximea.get("aruco_stability_check", {}) if isinstance(ximea, dict) else {}
+    if not parse_bool(limits.get("enabled") if isinstance(limits, dict) else None, True):
+        return {"status": "skipped", "reason": "disabled"}
+    cv2 = import_cv2()
+    zero_path = aruco_prescan_image_path(args.output.resolve(), "zero")
+    if not zero_path.exists():
+        raise RuntimeError("ArUco stability check requires the verified 0-degree prescan")
+    zero = read_image(cv2, zero_path)
+    marker_ids = parse_aruco_ids(args.aruco_ids)
+    target_by_id, _selected = require_aruco_markers(
+        cv2, zero, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
+    )
+    camera: CameraInterface | None = None
+    try:
+        camera, _settings = open_camera(args, profile_overrides=aruco_prescan_camera_profile(args))
+        current_frame = camera.capture_frame()
+    finally:
+        if camera is not None:
+            camera.stop()
+            camera.close()
+    try:
+        source_by_id, _selected = require_aruco_markers(
+            cv2, current_frame.image, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
+        )
+    except RuntimeError as exc:
+        # Main scan lighting is intentionally different from the no-pattern
+        # ArUco exposure.  Do not discard a verified precalibration merely
+        # because a fresh verification frame cannot see the printed markers.
+        result = {
+            "status": "unverified_marker_not_visible",
+            "reason": str(exc),
+            "action": "using_existing_stage_precalibration",
+        }
+        print("[aruco] stability check skipped: markers are not visible; using existing precalibration", flush=True)
+        return result
+    candidates = [
+        candidate for candidate in aruco_marker_candidates(marker_ids)
+        if all(marker_id in target_by_id and marker_id in source_by_id for marker_id in candidate)
+    ]
+    if not candidates:
+        raise RuntimeError("ArUco stability check cannot find the same marker pair; recapture prescan")
+    selected_ids = candidates[0]
+    source = np.asarray([point for marker_id in selected_ids for point in source_by_id[marker_id]], dtype=np.float32)
+    target = np.asarray([point for marker_id in selected_ids for point in target_by_id[marker_id]], dtype=np.float32)
+    center_shift = float(np.mean(np.linalg.norm(source - target, axis=1)))
+    rotation_deg, scale, _center = aruco_similarity_summary(source, target)
+    max_shift = float(limits.get("max_center_shift_px", 10.0))
+    max_rotation = float(limits.get("max_rotation_deg", 2.0))
+    max_scale_deviation = float(limits.get("max_scale_deviation", 0.03))
+    result = {
+        "status": "passed",
+        "marker_ids": selected_ids,
+        "mean_corner_shift_px": center_shift,
+        "rotation_deg": rotation_deg,
+        "scale": scale,
+        "limits": {
+            "max_center_shift_px": max_shift,
+            "max_rotation_deg": max_rotation,
+            "max_scale_deviation": max_scale_deviation,
+        },
+    }
+    if center_shift > max_shift or abs(rotation_deg) > max_rotation or abs(scale - 1.0) > max_scale_deviation:
+        raise RuntimeError(
+            "ArUco prescan is stale: rig/board/stage moved "
+            f"(shift={center_shift:.2f}px rotation={rotation_deg:.2f}deg scale={scale:.4f}); recapture prescan"
+        )
+    output_dir = aruco_prescan_dir(args.output.resolve())
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    write_image(cv2, output_dir / f"stability_before_scan_{stamp}.png", current_frame.image)
+    (output_dir / "stability_before_scan.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print(f"[aruco] stability check passed marker_ids={selected_ids} shift={center_shift:.2f}px", flush=True)
+    return result
+
+
+QUALITY_GATE_PATTERN_IDS = (0, 1, 2, 14, 10, 11, 12, 13)
+
+
+def decoder_channel_stats(cv2, image: Any, hdr: HdrConfig) -> dict[str, float | int | str]:
+    """Summarize the exact mono/blue-equivalent values consumed by the decoder."""
+    import numpy as np  # type: ignore
+
+    decoder_u8 = to_decoder_u8(to_grayscale(cv2, image))
+    return {
+        "channel": "blue_equivalent_mono" if len(image.shape) == 2 else "blue",
+        "dtype": str(image.dtype),
+        "decoder_dtype": str(decoder_u8.dtype),
+        "min": int(np.min(decoder_u8)),
+        "max": int(np.max(decoder_u8)),
+        "mean": float(np.mean(decoder_u8)),
+        "median": float(np.median(decoder_u8)),
+        "decoder_saturation_ratio": float(np.mean(decoder_u8 >= hdr.saturated_threshold)),
+        "decoder_dark_ratio": float(np.mean(decoder_u8 <= hdr.dark_threshold)),
+    }
+
+
+def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: QualityGateConfig) -> dict[str, Any]:
+    import numpy as np  # type: ignore
+
+    stats = {str(pattern_id): decoder_channel_stats(cv2, image, hdr) for pattern_id, image in images.items()}
+    result: dict[str, Any] = {"channel": "blue_equivalent", "patterns": stats, "checks": []}
+    failures: list[str] = []
+    if 0 in images and 1 in images:
+        white = to_decoder_u8(to_grayscale(cv2, images[0])).astype(np.float32)
+        black = to_decoder_u8(to_grayscale(cv2, images[1])).astype(np.float32)
+        contrast = float(np.median(white) - np.median(black))
+        passed = contrast >= gate.white_black_min_contrast_u8
+        result["white_black"] = {"median_contrast_u8": contrast, "passed": passed}
+        if not passed:
+            failures.append(f"White/Black contrast={contrast:.1f} < {gate.white_black_min_contrast_u8:.1f}")
+    for normal_id, inverse_id in zip(range(2, 10), range(14, 22)):
+        if normal_id not in images or inverse_id not in images:
+            continue
+        difference = np.abs(
+            to_decoder_u8(to_grayscale(cv2, images[normal_id])).astype(np.float32)
+            - to_decoder_u8(to_grayscale(cv2, images[inverse_id])).astype(np.float32)
+        )
+        valid_ratio = float(np.mean(difference >= gate.white_black_min_contrast_u8))
+        passed = valid_ratio >= gate.gray_pair_min_valid_ratio
+        result.setdefault("gray_pairs", {})[f"{normal_id:03d}_{inverse_id:03d}"] = {
+            "contrast_valid_ratio": valid_ratio,
+            "passed": passed,
+        }
+        if not passed:
+            failures.append(f"Gray pair {normal_id:03d}/{inverse_id:03d} valid={valid_ratio:.3f}")
+    sine_ids = [pattern_id for pattern_id in range(10, 14) if pattern_id in images]
+    if len(sine_ids) == 4:
+        sine_stack = np.stack([to_decoder_u8(to_grayscale(cv2, images[pattern_id])) for pattern_id in sine_ids], axis=0)
+        modulation = sine_stack.max(axis=0).astype(np.float32) - sine_stack.min(axis=0).astype(np.float32)
+        valid_ratio = float(np.mean(modulation >= gate.sine_min_modulation_u8))
+        result["sine"] = {
+            "median_modulation_u8": float(np.median(modulation)),
+            "valid_ratio": valid_ratio,
+            "passed": valid_ratio >= gate.sine_min_valid_ratio,
+        }
+        if valid_ratio < gate.sine_min_valid_ratio:
+            failures.append(f"Sine modulation valid={valid_ratio:.3f}")
+    # Final 16-bit HDR values are radiance-normalized to the longest bracket.
+    # Their near-white ratio is retained above as a decoder-facing diagnostic,
+    # but it is not a sensor-clipping gate. The preflight adds raw all-bracket
+    # saturation/dark checks, which distinguish real clipping from valid White.
+    result["passed"] = not failures
+    result["failures"] = failures
+    result["recommendations"] = (
+        [] if not failures else [
+            "Reduce the long HDR exposure or projector brightness when decoder saturation is high.",
+            "Block ambient light and verify projector focus when White/Black or Gray contrast is low.",
+            "Check projector pattern timing and camera focus when sine modulation is low.",
+        ]
+    )
+    return result
+
+
+def write_quality_histogram(cv2, images: dict[int, Any], output_path: Path) -> None:
+    import numpy as np  # type: ignore
+
+    canvas = np.full((300, 512, 3), 255, dtype=np.uint8)
+    colors = ((0, 0, 255), (0, 128, 0), (255, 0, 0), (0, 128, 128))
+    for index, pattern_id in enumerate(sorted(images)[:4]):
+        histogram = np.bincount(to_decoder_u8(to_grayscale(cv2, images[pattern_id])).ravel(), minlength=256)
+        peak = max(1, int(histogram.max()))
+        points = np.array([[value * 2, 280 - int(histogram[value] * 240 / peak)] for value in range(256)], dtype=np.int32)
+        cv2.polylines(canvas, [points], False, colors[index], 1)
+        cv2.putText(canvas, f"{pattern_id:03d}", (12 + 80 * index, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors[index], 1)
+    write_image(cv2, output_path, canvas)
+
+
+def record_pre_capture_display_witness(
+    cv2,
+    *,
+    camera: CameraInterface | None,
+    projected: Any,
+    spec: PatternSpec,
+    hdr: HdrConfig,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Persist the requested pattern and the settled camera view before HDR capture.
+
+    The projector framebuffer itself cannot be read back through OpenCV.  Saving the
+    rendered pattern alongside a camera frame acquired *after* the settle interval
+    makes a timing/display failure visible without confusing it with HDR merging.
+    """
+    witness_dir = output_dir / "display_witness"
+    projected_path = witness_dir / f"pattern_{spec.pattern_id:03d}_projected.png"
+    write_image(cv2, projected_path, projected)
+    result: dict[str, Any] = {
+        "pattern_id": spec.pattern_id,
+        "label": spec.label,
+        "requested_pattern": projected_path.name,
+        "settle_ms": effective_pattern_settle_ms(args),
+        "flush_frame_count": max(0, args.settle_flush_frames),
+    }
+    if camera is None:
+        result["camera_witness"] = None
+        return result
+
+    # A software-triggered XIMEA capture has no stale free-run queue, but taking
+    # disposable frames here makes the timing explicit and covers providers that do.
+    bracket = hdr.brackets[0]
+    camera.configure_capture(exposure_us=bracket.exposure_us, gain_db=bracket.gain_db)
+    if args.bracket_settle_ms > 0:
+        time.sleep(args.bracket_settle_ms / 1000.0)
+    discarded_indices: list[int] = []
+    for _ in range(max(0, args.settle_flush_frames)):
+        discarded_indices.append(camera.capture_frame().frame_index)
+    frame = camera.capture_frame()
+    camera_path = witness_dir / f"pattern_{spec.pattern_id:03d}_camera_settled.png"
+    save_camera_frame(cv2, frame, camera_path)
+    result.update(
+        {
+            "camera_witness": camera_path.name,
+            "witness_exposure_us": bracket.exposure_us,
+            "witness_gain_db": bracket.gain_db,
+            "camera_timestamp_ms": frame.timestamp_ms,
+            "camera_frame_index": frame.frame_index,
+            "discarded_frame_indices": discarded_indices,
+        }
+    )
+    return result
+
+
+def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpec], capture_config: CaptureConfig) -> dict[str, Any]:
+    """Capture a small no-save-to-main-scan diagnostic set before structured-light scanning."""
+    cv2 = import_cv2()
+    hdr = capture_config.hdr
+    requested = {spec.pattern_id: spec for spec in patterns}
+    selected = [requested[pattern_id] for pattern_id in QUALITY_GATE_PATTERN_IDS if pattern_id in requested]
+    output_dir = args.output.resolve() / "quality_gate" / datetime.now().strftime("preflight_%Y%m%d_%H%M%S")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    camera: CameraInterface | None = None
+    display: PatternDisplay | None = None
+    merged_images: dict[int, Any] = {}
+    merge_reports: dict[int, dict[str, Any]] = {}
+    display_witnesses: list[dict[str, Any]] = []
+    try:
+        if not args.no_camera and not args.dry_run:
+            camera, _settings = open_camera(args)
+        if not args.no_display and not args.dry_run:
+            display = PatternDisplay(args, pattern_image(cv2, selected[0]))
+            display.open(cv2)
+        for spec in selected:
+            projected = pattern_image(cv2, spec)
+            if display is not None:
+                display.show(cv2, projected)
+            time.sleep(effective_pattern_settle_ms(args) / 1000.0)
+            display_witnesses.append(
+                record_pre_capture_display_witness(
+                    cv2,
+                    camera=camera,
+                    projected=projected,
+                    spec=spec,
+                    hdr=hdr,
+                    args=args,
+                    output_dir=output_dir,
+                )
+            )
+            frames: list[Any] = []
+            offsets: list[float] = []
+            for bracket in hdr.brackets:
+                if camera is not None:
+                    camera.configure_capture(exposure_us=bracket.exposure_us, gain_db=bracket.gain_db)
+                    time.sleep(args.bracket_settle_ms / 1000.0)
+                    frame = camera.capture_frame()
+                    image = frame.image
+                    offsets.append(float(frame.metadata.get("black_level", hdr.black_offset)))
+                else:
+                    image = synthesize_frame(cv2, projected, bracket, hdr)
+                    offsets.append(hdr.black_offset)
+                frames.append(image)
+                write_image(cv2, output_dir / "raw" / f"pattern_{spec.pattern_id:03d}_{bracket.name}.png", image)
+            merged, saturated, dark, selected_map, merge = merge_hdr_frames(cv2, frames, hdr.brackets, hdr, offsets)
+            merged_images[spec.pattern_id] = merged
+            merge_reports[spec.pattern_id] = merge
+            write_image(cv2, output_dir / final_pattern_filename(spec.pattern_id), merged)
+            write_image(cv2, output_dir / "masks" / mask_filename(spec.pattern_id, "saturated"), saturated)
+            write_image(cv2, output_dir / "masks" / mask_filename(spec.pattern_id, "dark"), dark)
+            write_image(cv2, output_dir / "masks" / mask_filename(spec.pattern_id, "selected_bracket"), selected_map)
+        report = assess_fpp_quality(cv2, merged_images, hdr, capture_config.quality_gate)
+        raw_hdr_checks: dict[str, Any] = {}
+        for pattern_id, merge in merge_reports.items():
+            total = max(1, int(merged_images[pattern_id].size))
+            saturated_ratio = float(merge["saturated_pixel_count"] / total)
+            dark_ratio = float(merge["dark_pixel_count"] / total)
+            raw_hdr_checks[str(pattern_id)] = {
+                "all_brackets_saturated_ratio": saturated_ratio,
+                "all_brackets_dark_ratio": dark_ratio,
+            }
+            if saturated_ratio > capture_config.quality_gate.max_decoder_saturation_ratio:
+                report["failures"].append(f"pattern {pattern_id:03d} raw sensor saturation={saturated_ratio:.3f}")
+            if pattern_id != 1 and dark_ratio > capture_config.quality_gate.max_decoder_dark_ratio:
+                report["failures"].append(f"pattern {pattern_id:03d} raw sensor dark={dark_ratio:.3f}")
+        report["raw_hdr_checks"] = raw_hdr_checks
+        report["display_witnesses"] = display_witnesses
+        report["passed"] = not report["failures"]
+        report.update({"created_at": datetime.now().isoformat(timespec="seconds"), "output_dir": str(output_dir), "mode": "preflight"})
+        write_quality_histogram(cv2, merged_images, output_dir / "blue_channel_histograms.png")
+        (output_dir / "quality_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if not report["passed"]:
+            raise RuntimeError("quality gate failed: " + "; ".join(report["failures"]))
+        print(f"[quality] preflight passed: {output_dir}", flush=True)
+        return report
+    finally:
+        if display is not None:
+            display.close(cv2)
+        if camera is not None:
+            camera.stop()
+            camera.close()
 
 
 def run_scan(args: argparse.Namespace) -> int:
@@ -1347,8 +1741,30 @@ def run_scan(args: argparse.Namespace) -> int:
             saturated_threshold=hdr.saturated_threshold,
             dark_threshold=hdr.dark_threshold,
             black_offset=hdr.black_offset,
+            selection_headroom_threshold=hdr.selection_headroom_threshold,
             brackets=(ExposureBracket("single", int(args.exposure_us or 20000), float(args.gain_db or 0.0)),),
         )
+
+    configured_preflight_calibration = args.stage_precalibration or (
+        aruco_prescan_dir(args.output.resolve()) / "stage_precalibration.json"
+    )
+    aruco_stability: dict[str, Any] = {"status": "not_checked"}
+    if configured_preflight_calibration.exists():
+        try:
+            aruco_stability = verify_aruco_prescan_stability(args)
+        except (CameraError, RuntimeError, ValueError) as exc:
+            print(f"[aruco] ERROR: main scan blocked: {exc}", flush=True)
+            return 1
+
+    quality_gate_report: dict[str, Any] = {"status": "disabled"}
+    if capture_config.quality_gate.enabled:
+        quality_config = CaptureConfig(hdr=hdr, rig=capture_config.rig, quality_gate=capture_config.quality_gate)
+        try:
+            quality_gate_report = run_capture_quality_gate(args, patterns, quality_config)
+        except (CameraError, RuntimeError, ValueError) as exc:
+            print(f"[quality] ERROR: preflight failed before main scan: {exc}", flush=True)
+            return 1
+        quality_gate_report["status"] = "passed"
 
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1378,9 +1794,14 @@ def run_scan(args: argparse.Namespace) -> int:
 
     angles = parse_csv_ints(args.angles, "angles")
     expected_pattern_ids = LEGACY_PATTERN_IDS if args.legacy_14_patterns else FULL_PATTERN_IDS
+    # A quality-gated scan is auditable only when every bracket and its selection
+    # masks are retained, even if the legacy Save All checkbox is off.
+    save_diagnostics = bool(args.save_all_images or capture_config.quality_gate.enabled)
     scan_rows: list[dict[str, Any]] = []
     final_pattern_rows: list[dict[str, Any]] = []
     hdr_reports: list[dict[str, Any]] = []
+    final_quality_reports: dict[str, Any] = {}
+    main_scan_marker_visibility: dict[str, Any] = {}
     display: PatternDisplay | None = None
     camera: CameraInterface | None = None
     camera_settings: CameraSettings | None = None
@@ -1454,7 +1875,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 if display is not None:
                     display.show(cv2, projected)
                 display_ts = now_ms()
-                time.sleep(args.settle_ms / 1000.0)
+                time.sleep(effective_pattern_settle_ms(args) / 1000.0)
 
                 bracket_frames: list[Any] = []
                 bracket_black_offsets: list[float] = []
@@ -1465,7 +1886,7 @@ def run_scan(args: argparse.Namespace) -> int:
                     success = False
                     bracket_token = safe_filename_token(bracket.name)
                     exposure_path = None
-                    if args.save_all_images:
+                    if save_diagnostics:
                         exposure_path = (
                             angle_dir
                             / "exposures"
@@ -1583,7 +2004,7 @@ def run_scan(args: argparse.Namespace) -> int:
                         )
 
                 if hdr.enabled:
-                    merged, saturated_mask, dark_mask, merge_report = merge_hdr_frames(
+                    merged, saturated_mask, dark_mask, selected_bracket_map, merge_report = merge_hdr_frames(
                         cv2,
                         bracket_frames,
                         hdr.brackets,
@@ -1591,7 +2012,7 @@ def run_scan(args: argparse.Namespace) -> int:
                         bracket_black_offsets,
                     )
                 else:
-                    merged, saturated_mask, dark_mask, merge_report = prepare_single_exposure_frame(
+                    merged, saturated_mask, dark_mask, selected_bracket_map, merge_report = prepare_single_exposure_frame(
                         cv2,
                         bracket_frames[0],
                     )
@@ -1601,15 +2022,20 @@ def run_scan(args: argparse.Namespace) -> int:
                 final_filename = relative_to_scan(final_path, scan_dir)
                 saturated_filename = ""
                 dark_filename = ""
+                selected_bracket_filename = ""
                 saturated_size = 0
                 dark_size = 0
-                if args.save_all_images and hdr.enabled:
+                selected_bracket_size = 0
+                if save_diagnostics and hdr.enabled:
                     saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
                     dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
+                    selected_bracket_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "selected_bracket")
                     saturated_size = write_image(cv2, saturated_path, saturated_mask)
                     dark_size = write_image(cv2, dark_path, dark_mask)
+                    selected_bracket_size = write_image(cv2, selected_bracket_path, selected_bracket_map)
                     saturated_filename = relative_to_scan(saturated_path, scan_dir)
                     dark_filename = relative_to_scan(dark_path, scan_dir)
+                    selected_bracket_filename = relative_to_scan(selected_bracket_path, scan_dir)
                 merge_report.update(
                     {
                         "filename": final_filename,
@@ -1618,6 +2044,8 @@ def run_scan(args: argparse.Namespace) -> int:
                         "saturated_mask_size_bytes": saturated_size,
                         "dark_mask_filename": dark_filename,
                         "dark_mask_size_bytes": dark_size,
+                        "selected_bracket_map_filename": selected_bracket_filename,
+                        "selected_bracket_map_size_bytes": selected_bracket_size,
                     }
                 )
                 pattern_entry = {
@@ -1658,6 +2086,23 @@ def run_scan(args: argparse.Namespace) -> int:
             if missing:
                 missing_text = ", ".join(f"{pattern_id:02d} {PATTERN_LABELS[pattern_id]}" for pattern_id in missing)
                 raise RuntimeError(f"decode output validation failed for {angle_dir}: missing {missing_text}")
+            final_images = {
+                pattern_id: read_image(cv2, angle_dir / final_pattern_filename(pattern_id))
+                for pattern_id in expected_pattern_ids
+            }
+            visible_markers = detect_aruco_markers(cv2, final_images[0], args.aruco_dictionary)
+            main_scan_marker_visibility[str(angle)] = {
+                "pattern": "pattern_000.png",
+                "detected_ids": sorted(visible_markers),
+                "roi_status": "available" if len(visible_markers) == 4 else "disabled_insufficient_markers",
+                "note": "Precomputed stage_precalibration remains valid even when this pattern has no markers.",
+            }
+            quality = assess_fpp_quality(cv2, final_images, hdr, capture_config.quality_gate)
+            quality.update({"mode": "final_scan", "angle_deg": angle, "created_at": datetime.now().isoformat(timespec="seconds")})
+            write_quality_histogram(cv2, final_images, angle_dir / "blue_channel_histograms.png")
+            (angle_dir / "quality_report.json").write_text(json.dumps(quality, indent=2), encoding="utf-8")
+            final_quality_reports[str(angle)] = quality
+            print(f"[quality] final angle={angle:03d} passed={quality['passed']}", flush=True)
         print("[scan] decode output validation ok", flush=True)
 
     except KeyboardInterrupt:
@@ -1699,7 +2144,7 @@ def run_scan(args: argparse.Namespace) -> int:
             "stage_precalibration": stage_precalibration,
             "metadata": asdict(capture_config.rig),
             "settings": {
-                "settle_ms": args.settle_ms,
+                "settle_ms": effective_pattern_settle_ms(args),
                 "bracket_settle_ms": args.bracket_settle_ms,
                 "capture_timeout_ms": args.camera_timeout_ms,
                 "retries": args.retries,
@@ -1708,9 +2153,14 @@ def run_scan(args: argparse.Namespace) -> int:
                 "save_format": args.save_format,
                 "final_decode_format": FINAL_DECODE_SUFFIX,
                 "save_all_images": bool(args.save_all_images),
+                "save_diagnostics": save_diagnostics,
                 "hdr": asdict(hdr),
                 "legacy_14_patterns": args.legacy_14_patterns,
             },
+            "quality_gate": quality_gate_report,
+            "aruco_stability": aruco_stability,
+            "final_quality": final_quality_reports,
+            "main_scan_marker_visibility": main_scan_marker_visibility,
             "final_patterns": final_pattern_rows,
             "hdr_merge_report": hdr_reports,
             "rows": scan_rows,
@@ -1774,7 +2224,7 @@ def run_project_only(args: argparse.Namespace) -> int:
                     f"source={spec.source_path.name}",
                     flush=True,
                 )
-                time.sleep(args.settle_ms / 1000.0)
+                time.sleep(effective_pattern_settle_ms(args) / 1000.0)
 
         print("[project] complete", flush=True)
     except KeyboardInterrupt:
@@ -1797,7 +2247,7 @@ def run_preview(args: argparse.Namespace) -> int:
     gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     camera: CameraInterface | None = None
     try:
-        camera, _settings = open_camera(args)
+        camera, _settings = open_camera(args, profile_overrides=preview_camera_profile(args))
         show_opencv_window = args.gui_preview_file is None
         if show_opencv_window:
             cv2.namedWindow(args.preview_window_name, cv2.WINDOW_NORMAL)
@@ -1967,7 +2417,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-x", type=int)
     parser.add_argument("--window-y", type=int)
     parser.add_argument("--stretch", action="store_true", help="Stretch pattern to screen.")
-    parser.add_argument("--settle-ms", default=500, type=int)
+    parser.add_argument(
+        "--settle-ms",
+        default=1000,
+        type=int,
+        help="Requested milliseconds to wait after each projector pattern update (minimum applied: 1000 ms).",
+    )
+    parser.add_argument(
+        "--settle-flush-frames",
+        default=2,
+        type=int,
+        help="Disposable camera frames acquired after settling for preflight display-timing diagnostics.",
+    )
     parser.add_argument("--pre-black-ms", default=300, type=int)
     parser.add_argument("--finish-black-ms", default=300, type=int)
     parser.add_argument("--bracket-settle-ms", default=150, type=int)
@@ -2022,6 +2483,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image-format", choices=("mono8", "mono16", "rgb24"))
     parser.add_argument("--camera-timeout-ms", type=int)
+    parser.add_argument("--quality-gate", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--save-format", default=".png", type=normalize_suffix)
 
     parser.add_argument("--preview", action="store_true")

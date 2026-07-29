@@ -1069,10 +1069,9 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Device", 198, y + 4, 55, 22);
     g_app.deviceIndex = make_edit(hwnd, IDC_DEVICE_INDEX, L"0", 252, y, 50, 24);
     make_label(hwnd, L"Exposure us", 325, y + 4, 85, 22);
-    // This base exposure is used by the embedded live view and no-pattern ArUco
-    // prescans. HDR scan brackets below are applied separately for the main scan.
-    // The unlit stage needs a long exposure for its printed markers to be visible.
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"10000000", 410, y, 90, 24);
+    // Main-scan base state. Every structured-light frame below is captured with
+    // its HDR bracket; preview and ArUco use their own camera profiles.
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"20000", 410, y, 90, 24);
     make_label(hwnd, L"Gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
@@ -1088,7 +1087,7 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Angles", 340, y + 4, 55, 22);
     g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
-    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"500", 655, y, 80, 24);
+    g_app.settle = make_edit(hwnd, IDC_SETTLE, L"1000", 655, y, 80, 24);
 
     y += 34;
     make_label(hwnd, L"HDR low us", margin, y + 4, 82, 22);
