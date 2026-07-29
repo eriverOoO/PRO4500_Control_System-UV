@@ -992,7 +992,13 @@ def merge_hdr_frames(
     brackets: tuple[ExposureBracket, ...],
     hdr: HdrConfig,
     black_offsets: list[float] | None = None,
+<<<<<<< HEAD
 ) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
+=======
+    selected_bracket_index: int | None = None,
+    sequence_selection: dict[str, Any] | None = None,
+) -> tuple[Any, Any, Any, dict[str, Any]]:
+>>>>>>> 5067eee62e100f73b5e266269186bec39e426df4
     import numpy as np  # type: ignore
 
     if not frames:
@@ -1021,6 +1027,7 @@ def merge_hdr_frames(
 
     scales = np.array([bracket.exposure_gain_scale for bracket in brackets], dtype=np.float32)
     priority = np.argsort(scales)
+<<<<<<< HEAD
     chosen = np.full(first_shape, int(priority[0]), dtype=np.int32)
     any_valid = np.zeros(first_shape, dtype=bool)
     for index in priority:
@@ -1036,18 +1043,60 @@ def merge_hdr_frames(
     normalized = selected / np.maximum(selected_scales, 1.0) * max_scale
     normalized[~any_valid] = 0.0
     normalized = np.clip(normalized, 0, sensor_max)
+=======
+    if selected_bracket_index is None:
+        chosen = np.full(first_shape, int(priority[0]), dtype=np.int32)
+        any_valid = np.zeros(first_shape, dtype=bool)
+        for index in priority:
+            valid = (corrected_stack[index] > dark_threshold) & (stack[index] < saturated_threshold)
+            chosen[valid] = int(index)
+            any_valid |= valid
+        algorithm = "longest_unsaturated_radiance_normalized"
+    else:
+        if not 0 <= selected_bracket_index < len(frames):
+            raise RuntimeError("selected HDR bracket index is out of range")
+        chosen = np.full(first_shape, selected_bracket_index, dtype=np.int32)
+        any_valid = (
+            (corrected_stack[selected_bracket_index] > dark_threshold)
+            & (stack[selected_bracket_index] < saturated_threshold)
+        )
+        algorithm = "structured_light_sequence_bracket"
+>>>>>>> 5067eee62e100f73b5e266269186bec39e426df4
 
     output_max = 65535 if hdr.output_bit_depth == 16 else 255
     output_dtype = np.uint16 if hdr.output_bit_depth == 16 else np.uint8
-    merged = np.clip(normalized * (output_max / max(1, sensor_max)), 0, output_max).astype(output_dtype)
+    if selected_bracket_index is None:
+        selected = np.take_along_axis(corrected_stack, chosen[None, :, :], axis=0)[0]
+        selected_scales = scales[chosen]
+        max_scale = float(scales.max())
+        output_signal = selected / np.maximum(selected_scales, 1.0) * max_scale
+        output_signal[~any_valid] = 0.0
+        output_signal = np.clip(output_signal, 0, sensor_max)
+    else:
+        # The decoder performs its own White/Black normalization.  Preserve the
+        # selected bracket's native pattern contrast instead of applying an
+        # HDR radiance scaling that changes its White/Black relationship.
+        output_signal = stack[selected_bracket_index].astype(np.float32)
+    merged = np.clip(
+        output_signal * (output_max / max(1, sensor_max)), 0, output_max
+    ).astype(output_dtype)
 
+<<<<<<< HEAD
     saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
     dark_mask = np.all(corrected_stack <= dark_threshold, axis=0).astype(np.uint8) * 255
     selected_bracket_map = chosen.astype(np.uint8)
     merged_u8 = to_decoder_u8(merged)
+=======
+    if selected_bracket_index is None:
+        saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
+        dark_mask = np.all(corrected_stack <= dark_threshold, axis=0).astype(np.uint8) * 255
+    else:
+        saturated_mask = (stack[selected_bracket_index] >= saturated_threshold).astype(np.uint8) * 255
+        dark_mask = (corrected_stack[selected_bracket_index] <= dark_threshold).astype(np.uint8) * 255
+>>>>>>> 5067eee62e100f73b5e266269186bec39e426df4
 
     report = {
-        "algorithm": "longest_unsaturated_radiance_normalized",
+        "algorithm": algorithm,
         "output_bit_depth": hdr.output_bit_depth,
         "saturated_threshold": int(saturated_threshold),
         "selection_headroom_threshold": int(selection_threshold),
@@ -1066,10 +1115,112 @@ def merge_hdr_frames(
             for index in range(len(brackets))
         },
     }
+<<<<<<< HEAD
     return merged, saturated_mask, dark_mask, selected_bracket_map, report
 
 
 def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
+=======
+    if selected_bracket_index is not None:
+        report["selected_sequence_bracket"] = brackets[selected_bracket_index].name
+    if sequence_selection is not None:
+        report["sequence_selection"] = sequence_selection
+    return merged, saturated_mask, dark_mask, report
+
+
+def select_structured_light_sequence_bracket(
+    cv2,
+    captures: dict[int, tuple[list[Any], list[float]]],
+    brackets: tuple[ExposureBracket, ...],
+    hdr: HdrConfig,
+) -> tuple[int | None, dict[str, Any]]:
+    """Choose one bracket for an entire FPP sequence using decoder-facing metrics.
+
+    Per-pattern HDR pixel selection can make a normal/inverse Gray pair or the
+    four phase frames originate from different exposures.  The resulting image
+    can look well exposed while its relative structured-light contrast is
+    unusable.  This selector instead evaluates each complete bracket sequence
+    with the same white/black, Gray-pair, and four-step sine tests used by the
+    decoder, then uses one common bracket for all final patterns.
+    """
+    import numpy as np  # type: ignore
+
+    required = set(range(22))
+    if not required.issubset(captures):
+        return None, {
+            "mode": "fallback_per_pattern_hdr",
+            "reason": "full 22-pattern Gray-pair FPP sequence was not captured",
+        }
+    if any(len(captures[pattern_id][0]) != len(brackets) for pattern_id in required):
+        return None, {
+            "mode": "fallback_per_pattern_hdr",
+            "reason": "one or more patterns have incomplete HDR bracket captures",
+        }
+
+    candidate_reports: list[dict[str, Any]] = []
+    best_index = 0
+    best_score: tuple[int, int, int] | None = None
+
+    for bracket_index, bracket in enumerate(brackets):
+        normalized: dict[int, Any] = {}
+        for pattern_id in required:
+            frames, _offsets = captures[pattern_id]
+            normalized[pattern_id] = to_grayscale(
+                cv2, frames[bracket_index]
+            ).astype(np.float32)
+
+        white = normalized[0]
+        black = normalized[1]
+        signal = white - black
+        valid_capture = (signal > 20.0) & (white < 250.0) & (white > 5.0)
+        safe_signal = np.maximum(signal, 1e-6)
+        gray_confidence = np.minimum.reduce(
+            [
+                np.abs(normalized[2 + bit] - normalized[14 + bit]) / safe_signal
+                for bit in range(8)
+            ]
+        )
+        gray_valid = gray_confidence >= 0.05
+        corrected_sine = [
+            np.clip((normalized[pattern_id] - black) / safe_signal, 0.0, 1.0)
+            for pattern_id in (10, 11, 12, 13)
+        ]
+        modulation = 0.5 * np.hypot(
+            corrected_sine[0] - corrected_sine[2],
+            corrected_sine[3] - corrected_sine[1],
+        )
+        modulation_valid = modulation > 0.05
+        combined = valid_capture & gray_valid & modulation_valid
+        score = (
+            int(np.count_nonzero(combined)),
+            int(np.count_nonzero(valid_capture & gray_valid)),
+            int(np.count_nonzero(valid_capture & modulation_valid)),
+        )
+        candidate_reports.append(
+            {
+                "bracket": bracket.name,
+                "exposure_us": bracket.exposure_us,
+                "gain_db": bracket.gain_db,
+                "valid_capture_ratio": float(np.mean(valid_capture)),
+                "gray_valid_ratio": float(np.mean(gray_valid)),
+                "modulation_valid_ratio": float(np.mean(modulation_valid)),
+                "combined_valid_ratio": float(np.mean(combined)),
+            }
+        )
+        if best_score is None or score > best_score:
+            best_index = bracket_index
+            best_score = score
+
+    return best_index, {
+        "mode": "decoder_aware_common_bracket",
+        "selected_bracket": brackets[best_index].name,
+        "selection_metric": "maximize combined valid pixels, then Gray and sine overlaps",
+        "candidates": candidate_reports,
+    }
+
+
+def prepare_single_exposure_frame(cv2, frame: Any) -> tuple[Any, Any, Any, dict[str, Any]]:
+>>>>>>> 5067eee62e100f73b5e266269186bec39e426df4
     import numpy as np  # type: ignore
 
     output = to_grayscale(cv2, frame).copy()
@@ -1869,6 +2020,7 @@ def run_scan(args: argparse.Namespace) -> int:
 
             angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
             angle_dir.mkdir(parents=True, exist_ok=True)
+            angle_hdr_captures: list[dict[str, Any]] = []
 
             for spec in patterns:
                 projected = pattern_image(cv2, spec)
@@ -2025,8 +2177,14 @@ def run_scan(args: argparse.Namespace) -> int:
                 selected_bracket_filename = ""
                 saturated_size = 0
                 dark_size = 0
+<<<<<<< HEAD
                 selected_bracket_size = 0
                 if save_diagnostics and hdr.enabled:
+=======
+                saturated_path: Path | None = None
+                dark_path: Path | None = None
+                if args.save_all_images and hdr.enabled:
+>>>>>>> 5067eee62e100f73b5e266269186bec39e426df4
                     saturated_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "saturated")
                     dark_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "dark")
                     selected_bracket_path = angle_dir / "hdr_masks" / mask_filename(spec.pattern_id, "selected_bracket")
@@ -2059,14 +2217,13 @@ def run_scan(args: argparse.Namespace) -> int:
                     "merge": merge_report,
                 }
                 final_pattern_rows.append(pattern_entry)
-                hdr_reports.append(
-                    {
-                        "angle_deg": angle,
-                        "pattern_id": spec.pattern_id,
-                        "label": spec.label,
-                        **merge_report,
-                    }
-                )
+                hdr_report = {
+                    "angle_deg": angle,
+                    "pattern_id": spec.pattern_id,
+                    "label": spec.label,
+                    **merge_report,
+                }
+                hdr_reports.append(hdr_report)
                 for row in scan_rows[-len(bracket_entries) :]:
                     if row.get("pattern_id") == spec.pattern_id and row.get("angle_deg") == angle:
                         row["final_filename"] = final_filename
@@ -2077,6 +2234,99 @@ def run_scan(args: argparse.Namespace) -> int:
                     f"saved={final_filename}",
                     flush=True,
                 )
+                if hdr.enabled:
+                    angle_hdr_captures.append(
+                        {
+                            "spec": spec,
+                            "frames": bracket_frames,
+                            "black_offsets": bracket_black_offsets,
+                            "final_path": final_path,
+                            "saturated_path": saturated_path,
+                            "dark_path": dark_path,
+                            "merge_report": merge_report,
+                            "hdr_report": hdr_report,
+                        }
+                    )
+
+            if hdr.enabled:
+                captures_by_pattern = {
+                    int(record["spec"].pattern_id): (
+                        record["frames"],
+                        record["black_offsets"],
+                    )
+                    for record in angle_hdr_captures
+                }
+                selected_index, sequence_selection = select_structured_light_sequence_bracket(
+                    cv2,
+                    captures_by_pattern,
+                    hdr.brackets,
+                    hdr,
+                )
+                if selected_index is None:
+                    print(
+                        f"[merge] angle={angle:03d} using legacy per-pattern HDR: "
+                        f"{sequence_selection['reason']}",
+                        flush=True,
+                    )
+                else:
+                    selected_name = hdr.brackets[selected_index].name
+                    print(
+                        f"[merge] angle={angle:03d} selected common structured-light bracket="
+                        f"{selected_name}",
+                        flush=True,
+                    )
+                    for record in angle_hdr_captures:
+                        merged, saturated_mask, dark_mask, refreshed_report = merge_hdr_frames(
+                            cv2,
+                            record["frames"],
+                            hdr.brackets,
+                            hdr,
+                            record["black_offsets"],
+                            selected_bracket_index=selected_index,
+                            sequence_selection=sequence_selection,
+                        )
+                        final_size = write_image(cv2, record["final_path"], merged)
+                        saturated_path = record["saturated_path"]
+                        dark_path = record["dark_path"]
+                        saturated_size = (
+                            write_image(cv2, saturated_path, saturated_mask)
+                            if saturated_path is not None
+                            else 0
+                        )
+                        dark_size = (
+                            write_image(cv2, dark_path, dark_mask)
+                            if dark_path is not None
+                            else 0
+                        )
+                        previous_report = record["merge_report"]
+                        output_metadata = {
+                            key: previous_report[key]
+                            for key in (
+                                "filename",
+                                "saturated_mask_filename",
+                                "dark_mask_filename",
+                            )
+                        }
+                        output_metadata.update(
+                            {
+                                "size_bytes": final_size,
+                                "saturated_mask_size_bytes": saturated_size,
+                                "dark_mask_size_bytes": dark_size,
+                            }
+                        )
+                        refreshed_report.update(output_metadata)
+                        previous_report.clear()
+                        previous_report.update(refreshed_report)
+                        refreshed_hdr_report = record["hdr_report"]
+                        refreshed_hdr_report.clear()
+                        refreshed_hdr_report.update(
+                            {
+                                "angle_deg": angle,
+                                "pattern_id": record["spec"].pattern_id,
+                                "label": record["spec"].label,
+                                **previous_report,
+                            }
+                        )
 
             previous_angle = angle
 
