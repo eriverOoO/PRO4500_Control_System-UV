@@ -225,11 +225,15 @@ Mock 단일 캡처:
 .\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --single-capture --camera-provider mock
 ```
 
-XIMEA 실시간 미리보기:
+XIMEA 연속 미리보기(명령줄 전용):
 
 ```powershell
 .\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --preview --camera-provider ximea
 ```
+
+제어 패널은 카메라를 자동으로 연속 미리보기하지 않습니다. **Preview Scan**을 누르면
+현재 프레임 한 장만 우측에 표시하며, 이 프레임은 파일로 저장하지 않습니다. **Start Scan**과
+ArUco 캡처 중에는 각 실제 촬영 프레임만 우측에 표시합니다.
 
 미리보기 창을 열지 않고 XIMEA SDK/장치 연결 확인:
 

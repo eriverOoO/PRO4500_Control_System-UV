@@ -85,6 +85,7 @@ enum ControlId {
 enum class JobMode {
     Scan,
     Preview,
+    PreviewCapture,
     ProjectOnly,
     SingleCapture,
     ContinuousCapture,
@@ -234,7 +235,7 @@ void refresh_gui_preview() {
     if (GetObjectW(bitmap, sizeof(details), &details) == sizeof(details)) {
         set_text(
             g_app.previewInfo,
-            L"Live XIMEA preview  " + std::to_wstring(details.bmWidth) + L" x " + std::to_wstring(details.bmHeight));
+            L"Captured XIMEA image  " + std::to_wstring(details.bmWidth) + L" x " + std::to_wstring(details.bmHeight));
     }
 }
 
@@ -586,6 +587,8 @@ std::wstring build_controller_command(JobMode mode) {
 
     if (mode == JobMode::Preview) {
         cmd << L" --preview";
+    } else if (mode == JobMode::PreviewCapture) {
+        cmd << L" --preview-once";
     } else if (mode == JobMode::ProjectOnly) {
         cmd << L" --project-only"
             << L" --project-repeat " << quote(get_text(g_app.projectRepeat));
@@ -770,16 +773,6 @@ void stop_background_preview() {
     if (!g_app.previewRunning.load()) return;
     TerminateProcess(g_app.previewProcess.hProcess, 130);
     set_status(L"Switching Camera");
-}
-
-void restart_background_preview() {
-    if (g_app.jobRunning.load()) return;
-    if (g_app.previewRunning.load()) {
-        g_app.restartPreviewAfterStop = true;
-        stop_background_preview();
-    } else {
-        start_background_preview();
-    }
 }
 
 void start_job(JobMode mode, const std::wstring& label) {
@@ -1114,7 +1107,7 @@ void build_ui(HWND hwnd) {
     y += 42;
     g_app.start = make_button(hwnd, IDC_START, L"Start Scan", margin, y, 115, 32);
     g_app.projectOnly = make_button(hwnd, IDC_PROJECT_ONLY, L"Project Only", 142, y, 115, 32);
-    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Restart Preview", 270, y, 95, 32);
+    g_app.preview = make_button(hwnd, IDC_PREVIEW, L"Preview Scan", 270, y, 105, 32);
     g_app.singleCapture = make_button(hwnd, IDC_SINGLE_CAPTURE, L"Single Capture", 378, y, 120, 32);
     g_app.continuousCapture = make_button(hwnd, IDC_CONTINUOUS_CAPTURE, L"Continuous", 513, y, 115, 32);
     g_app.stop = make_button(hwnd, IDC_STOP, L"Stop", 643, y, 80, 32);
@@ -1132,7 +1125,7 @@ void build_ui(HWND hwnd) {
         margin, y, 912, 350, hwnd, reinterpret_cast<HMENU>(IDC_LOG), g_app.instance, nullptr);
     SendMessageW(g_app.log, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 
-    make_label(hwnd, L"Live camera preview (starts automatically)", 950, 14, 360, 22);
+    make_label(hwnd, L"Captured camera image", 950, 14, 360, 22);
     g_app.previewImage = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         L"STATIC",
@@ -1146,7 +1139,7 @@ void build_ui(HWND hwnd) {
         nullptr,
         g_app.instance,
         nullptr);
-    g_app.previewInfo = make_label(hwnd, L"Waiting for XIMEA camera...", 950, 292, 360, 22);
+    g_app.previewInfo = make_label(hwnd, L"Use Preview Scan or start a capture.", 950, 292, 360, 22);
 }
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -1155,7 +1148,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         g_app.window = hwnd;
         build_ui(hwnd);
         SetTimer(hwnd, kPreviewRefreshTimer, 100, nullptr);
-        start_background_preview();
         return 0;
     case WM_COMMAND: {
         int id = LOWORD(wparam);
@@ -1179,7 +1171,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             start_job(JobMode::Scan, L"scan");
             return 0;
         case IDC_PREVIEW:
-            restart_background_preview();
+            start_job(JobMode::PreviewCapture, L"preview scan (not saved)");
             return 0;
         case IDC_ARUCO_CAPTURE_ZERO:
             start_job(JobMode::ArucoCaptureZero, L"ArUco 0 prescan");
@@ -1264,7 +1256,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 L"ArUco Alignment Ready",
                 MB_ICONINFORMATION);
         }
-        if (!g_app.closing) start_background_preview();
         return 0;
     }
     case WM_APP_PREVIEW_DONE: {

@@ -2491,6 +2491,32 @@ def run_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_preview_capture(args: argparse.Namespace) -> int:
+    """Capture one current camera frame for the GUI without saving it to a scan folder."""
+    cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
+    camera: CameraInterface | None = None
+    try:
+        camera, _settings = open_camera(args, profile_overrides=preview_camera_profile(args))
+        frame = camera.capture_frame()
+        gui_preview.publish(frame.image)
+        if args.gui_preview_file is None:
+            cv2.namedWindow(args.preview_window_name, cv2.WINDOW_NORMAL)
+            cv2.imshow(args.preview_window_name, preview_image(cv2, frame.image))
+            cv2.waitKey(0)
+        print("[preview] captured one frame for display only; no image was saved.", flush=True)
+        return 0
+    except CameraError as exc:
+        print(f"[camera] ERROR: {exc}", flush=True)
+        return 1
+    finally:
+        if camera is not None:
+            camera.stop()
+            camera.close()
+        if args.gui_preview_file is None:
+            cv2.destroyAllWindows()
+
+
 def run_single_capture(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
     gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
@@ -2705,6 +2731,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--preview", action="store_true")
     parser.add_argument(
+        "--preview-once",
+        action="store_true",
+        help="Capture one camera frame for preview only; do not save it.",
+    )
+    parser.add_argument(
         "--gui-preview-file",
         type=Path,
         help="Write the latest camera frame as a BMP for the native control panel.",
@@ -2758,6 +2789,8 @@ def main() -> int:
         return run_project_only(args)
     if args.preview:
         return run_preview(args)
+    if args.preview_once:
+        return run_preview_capture(args)
     if args.single_capture:
         return run_single_capture(args)
     if args.continuous_capture is not None:
