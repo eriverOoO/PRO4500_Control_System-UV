@@ -8,6 +8,7 @@ from structured_light_pc_controller import (
     HdrConfig,
     merge_hdr_frames,
     select_structured_light_sequence_bracket,
+    summarize_quality_issues,
 )
 
 
@@ -76,3 +77,22 @@ def test_selected_sequence_bracket_preserves_native_decoder_signal() -> None:
     np.testing.assert_allclose(recovered, short, atol=1.0)
     assert report["algorithm"] == "structured_light_sequence_bracket"
     assert report["selected_sequence_bracket"] == "short"
+
+
+def test_quality_issue_summary_records_failures_without_stopping_scan() -> None:
+    summary = summarize_quality_issues(
+        {
+            "status": "failed_continued",
+            "output_dir": "C:/captures/quality_gate/preflight",
+            "failures": ["White/Black contrast=8.0 < 20.0"],
+        },
+        {
+            "0": {"failures": ["Sine modulation valid=0.010"]},
+            "180": {"failures": []},
+        },
+    )
+
+    assert summary["enforcement"] == "record_only"
+    assert summary["main_scan_continued_after_preflight_failure"] is True
+    assert summary["preflight"]["failure_count"] == 1
+    assert summary["final_scan_failures_by_angle"] == {"0": ["Sine modulation valid=0.010"]}

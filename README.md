@@ -126,8 +126,8 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
       "dark_threshold": 5,
       "brackets": [
         { "name": "short", "exposure_us": 2500, "gain_db": 0.0 },
-        { "name": "mid", "exposure_us": 10000, "gain_db": 0.0 },
-        { "name": "long", "exposure_us": 40000, "gain_db": 0.0 }
+        { "name": "mid", "exposure_us": 14000, "gain_db": 0.0 },
+        { "name": "long", "exposure_us": 80000, "gain_db": 0.0 }
       ]
     },
     "metadata": {

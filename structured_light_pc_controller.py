@@ -1760,7 +1760,7 @@ def record_pre_capture_display_witness(
 
 
 def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpec], capture_config: CaptureConfig) -> dict[str, Any]:
-    """Capture a small no-save-to-main-scan diagnostic set before structured-light scanning."""
+    """Capture a preflight diagnostic set; quality failures are reported, not raised."""
     cv2 = import_cv2()
     hdr = capture_config.hdr
     requested = {spec.pattern_id: spec for spec in patterns}
@@ -1832,12 +1832,25 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
         report["raw_hdr_checks"] = raw_hdr_checks
         report["display_witnesses"] = display_witnesses
         report["passed"] = not report["failures"]
-        report.update({"created_at": datetime.now().isoformat(timespec="seconds"), "output_dir": str(output_dir), "mode": "preflight"})
+        report.update(
+            {
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "output_dir": str(output_dir),
+                "mode": "preflight",
+                "enforcement": "record_only",
+                "status": "passed" if report["passed"] else "failed_continued",
+            }
+        )
         write_quality_histogram(cv2, merged_images, output_dir / "blue_channel_histograms.png")
         (output_dir / "quality_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        if not report["passed"]:
-            raise RuntimeError("quality gate failed: " + "; ".join(report["failures"]))
-        print(f"[quality] preflight passed: {output_dir}", flush=True)
+        if report["passed"]:
+            print(f"[quality] preflight passed: {output_dir}", flush=True)
+        else:
+            print(
+                "[quality] WARNING: preflight criteria not met; continuing main scan and recording failures: "
+                + "; ".join(report["failures"]),
+                flush=True,
+            )
         return report
     finally:
         if display is not None:
@@ -1845,6 +1858,31 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
         if camera is not None:
             camera.stop()
             camera.close()
+
+
+def summarize_quality_issues(
+    preflight_report: dict[str, Any], final_reports: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Create a compact, machine-readable index of all quality criteria failures."""
+    preflight_failures = list(preflight_report.get("failures", []))
+    final_failures = {
+        str(angle): list(report.get("failures", []))
+        for angle, report in final_reports.items()
+        if report.get("failures")
+    }
+    return {
+        "schema_version": 1,
+        "enforcement": "record_only",
+        "main_scan_continued_after_preflight_failure": bool(preflight_failures),
+        "preflight": {
+            "status": preflight_report.get("status", "not_run"),
+            "failure_count": len(preflight_failures),
+            "failures": preflight_failures,
+            "report_directory": preflight_report.get("output_dir"),
+        },
+        "final_scan_failures_by_angle": final_failures,
+        "final_scan_failure_count": sum(len(failures) for failures in final_failures.values()),
+    }
 
 
 def run_scan(args: argparse.Namespace) -> int:
@@ -1883,9 +1921,10 @@ def run_scan(args: argparse.Namespace) -> int:
         try:
             quality_gate_report = run_capture_quality_gate(args, patterns, quality_config)
         except (CameraError, RuntimeError, ValueError) as exc:
-            print(f"[quality] ERROR: preflight failed before main scan: {exc}", flush=True)
+            # Capture/configuration faults are still fatal.  Criteria failures are
+            # returned by run_capture_quality_gate and handled below as warnings.
+            print(f"[quality] ERROR: preflight could not run: {exc}", flush=True)
             return 1
-        quality_gate_report["status"] = "passed"
 
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -2375,6 +2414,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 "legacy_14_patterns": args.legacy_14_patterns,
             },
             "quality_gate": quality_gate_report,
+            "quality_issue_summary": summarize_quality_issues(quality_gate_report, final_quality_reports),
             "aruco_stability": aruco_stability,
             "final_quality": final_quality_reports,
             "main_scan_marker_visibility": main_scan_marker_visibility,
