@@ -996,8 +996,8 @@ void build_ui(HWND hwnd) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_AUTOTICKS,
         90, y, 260, 32, hwnd, reinterpret_cast<HMENU>(IDC_LED_SLIDER), g_app.instance, nullptr);
     SendMessageW(g_app.ledSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 255));
-    SendMessageW(g_app.ledSlider, TBM_SETPOS, TRUE, 128);
-    g_app.ledValue = make_label(hwnd, L"128", 360, y + 4, 45, 22);
+    SendMessageW(g_app.ledSlider, TBM_SETPOS, TRUE, 110);
+    g_app.ledValue = make_label(hwnd, L"110", 360, y + 4, 45, 22);
     g_app.applyLed = make_button(hwnd, IDC_APPLY_LED, L"Apply LED", 425, y, 110, 28);
     g_app.ledOff = make_button(hwnd, IDC_LED_OFF, L"LED Off", 550, y, 90, 28);
 
