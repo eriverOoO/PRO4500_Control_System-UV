@@ -41,6 +41,11 @@
     }
   },
   "capture": {
+    "aruco_stage": {
+      "layout": "stage-cross",
+      "marker_center_radius_mm": 42.0,
+      "stage_diameter_mm": 105.0
+    },
     "hdr": {
       "enabled": true,
       "output_bit_depth": 16,

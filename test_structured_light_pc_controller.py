@@ -7,6 +7,7 @@ from structured_light_pc_controller import (
     ExposureBracket,
     HdrConfig,
     QualityGateConfig,
+    aruco_stage_geometry,
     aruco_marker_observations,
     assess_fpp_quality,
     merge_hdr_frames,
@@ -150,4 +151,17 @@ def test_aruco_marker_observations_save_corners_and_centers() -> None:
             "corners_px": [[1.0, 2.0], [5.0, 2.0], [5.0, 6.0], [1.0, 6.0]],
             "center_px": [3.0, 4.0],
         }
+    }
+
+
+def test_aruco_stage_geometry_uses_configured_stage_cross_coordinates(tmp_path) -> None:
+    config = tmp_path / "camera_config.json"
+    config.write_text(
+        '{"capture":{"aruco_stage":{"layout":"stage-cross","marker_center_radius_mm":42,"stage_diameter_mm":105}}}',
+        encoding="utf-8",
+    )
+    geometry = aruco_stage_geometry(type("Args", (), {"camera_config": config})(), [0, 1, 2, 3])
+
+    assert geometry["marker_centers_mm"] == {
+        "0": [0.0, -42.0], "1": [42.0, 0.0], "2": [0.0, 42.0], "3": [-42.0, 0.0]
     }

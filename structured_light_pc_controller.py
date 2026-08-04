@@ -1339,6 +1339,35 @@ def aruco_prescan_image_path(output_root: Path, role: str) -> Path:
     return aruco_prescan_dir(output_root) / name
 
 
+def aruco_stage_geometry(args: argparse.Namespace, marker_ids: list[int]) -> dict[str, Any]:
+    """Return the physical stage coordinates associated with the configured marker order."""
+    config = read_json_file(args.camera_config)
+    capture = config.get("capture", {})
+    stage = capture.get("aruco_stage", {}) if isinstance(capture, dict) else {}
+    if not isinstance(stage, dict):
+        stage = {}
+    layout = str(stage.get("layout", "stage-cross"))
+    if layout != "stage-cross":
+        raise ValueError("capture.aruco_stage.layout must be stage-cross")
+    radius_mm = float(stage.get("marker_center_radius_mm", 42.0))
+    if not math.isfinite(radius_mm) or radius_mm <= 0:
+        raise ValueError("capture.aruco_stage.marker_center_radius_mm must be positive")
+    stage_diameter_mm = float(stage.get("stage_diameter_mm", 105.0))
+    if not math.isfinite(stage_diameter_mm) or stage_diameter_mm < 2.0 * radius_mm:
+        raise ValueError("capture.aruco_stage.stage_diameter_mm must contain the marker centers")
+    directions = ((0.0, -radius_mm), (radius_mm, 0.0), (0.0, radius_mm), (-radius_mm, 0.0))
+    return {
+        "layout": layout,
+        "marker_center_radius_mm": radius_mm,
+        "stage_diameter_mm": stage_diameter_mm,
+        "marker_centers_mm": {
+            str(marker_id): [float(x), float(y)]
+            for marker_id, (x, y) in zip(marker_ids, directions)
+        },
+        "marker_order": "top,right,bottom,left",
+    }
+
+
 def aruco_marker_observations(markers: dict[int, Any]) -> dict[str, dict[str, list[list[float]] | list[float]]]:
     """Serialize detected ArUco geometry for later stage-coordinate calibration."""
     import numpy as np  # type: ignore
@@ -1373,12 +1402,34 @@ def copy_aruco_prescan_artifacts(output_root: Path, scan_dir: Path) -> dict[str,
         destination_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination_dir / filename)
         copied.append(filename)
+    observations: dict[str, Any] = {}
+    required_ids: set[str] = set()
+    for role, filename in (("zero", "zero_capture.json"), ("rotated", "rotated_capture.json")):
+        metadata = read_json_file(source_dir / filename)
+        if not metadata:
+            continue
+        marker_data = metadata.get("marker_observations", {})
+        requested = metadata.get("requested_marker_ids", [])
+        if isinstance(marker_data, dict):
+            observations[role] = sorted(marker_data)
+        if isinstance(requested, list):
+            required_ids.update(str(marker_id) for marker_id in requested)
+    full_marker_coverage = bool(required_ids) and all(
+        required_ids.issubset(set(observations.get(role, [])))
+        for role in ("zero", "rotated")
+    )
     return {
         "status": "copied" if copied else "not_found",
         "source": str(source_dir),
         "directory": str(destination_dir) if copied else "",
         "copied_files": copied,
         "missing_files": missing,
+        "spatial_calibration": {
+            "required_marker_ids": sorted(required_ids),
+            "detected_marker_ids_by_role": observations,
+            "full_marker_coverage": full_marker_coverage,
+            "status": "ready" if full_marker_coverage else "insufficient_markers",
+        },
     }
 
 
@@ -1389,6 +1440,7 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
     camera: CameraInterface | None = None
     try:
         marker_ids = parse_aruco_ids(args.aruco_ids)
+        stage_geometry = aruco_stage_geometry(args, marker_ids)
         camera, settings = open_camera(
             args,
             exposure_us=args.aruco_exposure_us,
@@ -1419,6 +1471,7 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             "selected_marker_ids": selected_ids,
             "detected_ids": sorted(markers),
             "marker_observations": aruco_marker_observations(markers),
+            "stage_geometry": stage_geometry,
             "exposure_us": settings.exposure_us,
             "gain_db": settings.gain_db,
             "camera_timestamp_ms": frame.timestamp_ms,
@@ -2016,6 +2069,12 @@ def run_scan(args: argparse.Namespace) -> int:
             + ", ".join(aruco_prescan_artifacts["copied_files"]),
             flush=True,
         )
+        if aruco_prescan_artifacts["spatial_calibration"]["status"] != "ready":
+            print(
+                "[aruco] WARNING: spatial height calibration needs all requested ArUco IDs "
+                "in both zero and rotated prescans; this scan remains usable for 0/180 alignment.",
+                flush=True,
+            )
     configured_precalibration = args.stage_precalibration or (
         aruco_prescan_dir(output_root) / "stage_precalibration.json"
     )
