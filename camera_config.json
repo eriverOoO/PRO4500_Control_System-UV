@@ -4,7 +4,7 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 20000,
+      "exposure_us": 6000,
       "gain_db": 0.0,
       "fps": 10.0,
       "trigger_mode": "software",
@@ -20,7 +20,7 @@
         "image_format": "mono8"
       },
       "aruco_prescan": {
-        "exposure_us": 200000,
+        "exposure_us": 450000,
         "gain_db": 0.0,
         "fps": 50.32,
         "trigger_mode": "off",
@@ -51,17 +51,17 @@
       "brackets": [
         {
           "name": "short",
-          "exposure_us": 2500,
+          "exposure_us": 6000,
           "gain_db": 0.0
         },
         {
           "name": "mid",
-          "exposure_us": 14000,
+          "exposure_us": 8500,
           "gain_db": 0.0
         },
         {
           "name": "long",
-          "exposure_us": 80000,
+          "exposure_us": 12000,
           "gain_db": 0.0
         }
       ]

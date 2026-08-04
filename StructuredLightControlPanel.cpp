@@ -1011,7 +1011,7 @@ void build_ui(HWND hwnd) {
     g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture ArUco rotated", 170, y, 175, 28);
     g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Calculate Alignment", 360, y, 160, 28);
     make_label(hwnd, L"ArUco exposure us", 545, y + 4, 120, 22);
-    g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"200000", 670, y, 100, 24);
+    g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 670, y, 100, 24);
 
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
@@ -1064,7 +1064,10 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Exposure us", 325, y + 4, 85, 22);
     // Main-scan base state. Every structured-light frame below is captured with
     // its HDR bracket; preview and ArUco use their own camera profiles.
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"20000", 410, y, 90, 24);
+    // Keep GUI overrides aligned with camera_config.json.  These fields are
+    // explicitly passed to the capture process, so stale defaults here would
+    // otherwise override the JSON profile.
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"6000", 410, y, 90, 24);
     make_label(hwnd, L"Gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
@@ -1074,6 +1077,9 @@ void build_ui(HWND hwnd) {
 
     y += 34;
     make_label(hwnd, L"Format", margin, y + 4, 55, 22);
+    // The current decoder expects 8-bit camera values. Ximea's native 12-bit
+    // data in a 16-bit container is otherwise downscaled as if it used all
+    // 16 bits, collapsing the signal into the dark threshold.
     g_app.imageFormat = make_edit(hwnd, IDC_IMAGE_FORMAT, L"mono8", 75, y, 80, 24);
     make_label(hwnd, L"Monitor", 185, y + 4, 60, 22);
     g_app.monitor = make_edit(hwnd, IDC_MONITOR, L"1", 250, y, 60, 24);
@@ -1084,15 +1090,15 @@ void build_ui(HWND hwnd) {
 
     y += 34;
     make_label(hwnd, L"HDR low us", margin, y + 4, 82, 22);
-    g_app.shortExposure = make_edit(hwnd, IDC_SHORT_EXPOSURE, L"2500", 105, y, 78, 24);
+    g_app.shortExposure = make_edit(hwnd, IDC_SHORT_EXPOSURE, L"6000", 105, y, 78, 24);
     make_label(hwnd, L"dB", 190, y + 4, 24, 22);
     g_app.shortGain = make_edit(hwnd, IDC_SHORT_GAIN, L"0.0", 215, y, 54, 24);
     make_label(hwnd, L"mid us", 295, y + 4, 55, 22);
-    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"14000", 350, y, 78, 24);
+    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"8500", 350, y, 78, 24);
     make_label(hwnd, L"dB", 435, y + 4, 24, 22);
     g_app.midGain = make_edit(hwnd, IDC_MID_GAIN, L"0.0", 460, y, 54, 24);
     make_label(hwnd, L"high us", 540, y + 4, 60, 22);
-    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"80000", 605, y, 78, 24);
+    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"12000", 605, y, 78, 24);
     make_label(hwnd, L"dB", 690, y + 4, 24, 22);
     g_app.longGain = make_edit(hwnd, IDC_LONG_GAIN, L"0.0", 715, y, 54, 24);
 

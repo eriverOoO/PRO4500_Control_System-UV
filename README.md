@@ -110,7 +110,7 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
       "width": 0,
       "height": 0,
       "aruco_prescan": {
-        "exposure_us": 200000,
+        "exposure_us": 450000,
         "gain_db": 0.0,
         "fps": 50.32,
         "trigger_mode": "off",

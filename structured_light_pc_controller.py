@@ -1642,11 +1642,30 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
     if 0 in images and 1 in images:
         white = to_decoder_u8(to_grayscale(cv2, images[0])).astype(np.float32)
         black = to_decoder_u8(to_grayscale(cv2, images[1])).astype(np.float32)
-        contrast = float(np.median(white) - np.median(black))
-        passed = contrast >= gate.white_black_min_contrast_u8
-        result["white_black"] = {"median_contrast_u8": contrast, "passed": passed}
+        signal = np.maximum(white - black, 0.0)
+        # The camera deliberately includes a large black border around the
+        # projected stage.  A whole-frame median is therefore dominated by
+        # that border (and can report 1--3 DN even when the illuminated stage
+        # has excellent contrast).  Measure the portion that actually reaches
+        # the decoder's minimum contrast instead, and require a meaningful
+        # amount of that illuminated area.
+        active = signal >= gate.white_black_min_contrast_u8
+        active_ratio = float(np.mean(active))
+        contrast = float(np.median(signal[active])) if np.any(active) else 0.0
+        min_active_ratio = gate.gray_pair_min_valid_ratio
+        passed = active_ratio >= min_active_ratio
+        result["white_black"] = {
+            "metric": "median_active_signal_u8",
+            "median_contrast_u8": contrast,
+            "active_contrast_ratio": active_ratio,
+            "min_active_contrast_ratio": min_active_ratio,
+            "passed": passed,
+        }
         if not passed:
-            failures.append(f"White/Black contrast={contrast:.1f} < {gate.white_black_min_contrast_u8:.1f}")
+            failures.append(
+                "White/Black active contrast coverage="
+                f"{active_ratio:.3f} < {min_active_ratio:.3f}"
+            )
     for normal_id, inverse_id in zip(range(2, 10), range(14, 22)):
         if normal_id not in images or inverse_id not in images:
             continue
