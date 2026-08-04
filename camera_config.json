@@ -4,7 +4,7 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 6000,
+      "exposure_us": 4500,
       "gain_db": 0.0,
       "fps": 10.0,
       "trigger_mode": "software",
@@ -56,17 +56,17 @@
       "brackets": [
         {
           "name": "short",
-          "exposure_us": 6000,
+          "exposure_us": 4500,
           "gain_db": 0.0
         },
         {
           "name": "mid",
-          "exposure_us": 8500,
+          "exposure_us": 6500,
           "gain_db": 0.0
         },
         {
           "name": "long",
-          "exposure_us": 12000,
+          "exposure_us": 9500,
           "gain_db": 0.0
         }
       ]

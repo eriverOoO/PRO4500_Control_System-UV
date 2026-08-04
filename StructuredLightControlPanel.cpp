@@ -1067,7 +1067,7 @@ void build_ui(HWND hwnd) {
     // Keep GUI overrides aligned with camera_config.json.  These fields are
     // explicitly passed to the capture process, so stale defaults here would
     // otherwise override the JSON profile.
-    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"6000", 410, y, 90, 24);
+    g_app.exposure = make_edit(hwnd, IDC_EXPOSURE, L"4500", 410, y, 90, 24);
     make_label(hwnd, L"Gain dB", 505, y + 4, 80, 22);
     g_app.gain = make_edit(hwnd, IDC_GAIN, L"0.0", 585, y, 70, 24);
     make_label(hwnd, L"FPS", 680, y + 4, 35, 22);
@@ -1090,15 +1090,15 @@ void build_ui(HWND hwnd) {
 
     y += 34;
     make_label(hwnd, L"HDR low us", margin, y + 4, 82, 22);
-    g_app.shortExposure = make_edit(hwnd, IDC_SHORT_EXPOSURE, L"6000", 105, y, 78, 24);
+    g_app.shortExposure = make_edit(hwnd, IDC_SHORT_EXPOSURE, L"4500", 105, y, 78, 24);
     make_label(hwnd, L"dB", 190, y + 4, 24, 22);
     g_app.shortGain = make_edit(hwnd, IDC_SHORT_GAIN, L"0.0", 215, y, 54, 24);
     make_label(hwnd, L"mid us", 295, y + 4, 55, 22);
-    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"8500", 350, y, 78, 24);
+    g_app.midExposure = make_edit(hwnd, IDC_MID_EXPOSURE, L"6500", 350, y, 78, 24);
     make_label(hwnd, L"dB", 435, y + 4, 24, 22);
     g_app.midGain = make_edit(hwnd, IDC_MID_GAIN, L"0.0", 460, y, 54, 24);
     make_label(hwnd, L"high us", 540, y + 4, 60, 22);
-    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"12000", 605, y, 78, 24);
+    g_app.longExposure = make_edit(hwnd, IDC_LONG_EXPOSURE, L"9500", 605, y, 78, 24);
     make_label(hwnd, L"dB", 690, y + 4, 24, 22);
     g_app.longGain = make_edit(hwnd, IDC_LONG_GAIN, L"0.0", 715, y, 54, 24);
 
