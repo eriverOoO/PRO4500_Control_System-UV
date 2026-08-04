@@ -1639,6 +1639,7 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
     stats = {str(pattern_id): decoder_channel_stats(cv2, image, hdr) for pattern_id, image in images.items()}
     result: dict[str, Any] = {"channel": "blue_equivalent", "patterns": stats, "checks": []}
     failures: list[str] = []
+    active: Any | None = None
     if 0 in images and 1 in images:
         white = to_decoder_u8(to_grayscale(cv2, images[0])).astype(np.float32)
         black = to_decoder_u8(to_grayscale(cv2, images[1])).astype(np.float32)
@@ -1673,10 +1674,18 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
             to_decoder_u8(to_grayscale(cv2, images[normal_id])).astype(np.float32)
             - to_decoder_u8(to_grayscale(cv2, images[inverse_id])).astype(np.float32)
         )
-        valid_ratio = float(np.mean(difference >= gate.white_black_min_contrast_u8))
+        valid = difference >= gate.white_black_min_contrast_u8
+        full_frame_valid_ratio = float(np.mean(valid))
+        # Evaluate Gray complements inside the illuminated stage only.  The
+        # full camera frame has a deliberately black border, so a full-frame
+        # ratio can flag a valid dark object merely because most pixels never
+        # receive a projected pattern.
+        valid_ratio = float(np.mean(valid[active])) if active is not None and np.any(active) else 0.0
         passed = valid_ratio >= gate.gray_pair_min_valid_ratio
         result.setdefault("gray_pairs", {})[f"{normal_id:03d}_{inverse_id:03d}"] = {
             "contrast_valid_ratio": valid_ratio,
+            "full_frame_contrast_valid_ratio": full_frame_valid_ratio,
+            "evaluation_region": "white_black_active_stage",
             "passed": passed,
         }
         if not passed:
@@ -1685,10 +1694,14 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
     if len(sine_ids) == 4:
         sine_stack = np.stack([to_decoder_u8(to_grayscale(cv2, images[pattern_id])) for pattern_id in sine_ids], axis=0)
         modulation = sine_stack.max(axis=0).astype(np.float32) - sine_stack.min(axis=0).astype(np.float32)
-        valid_ratio = float(np.mean(modulation >= gate.sine_min_modulation_u8))
+        valid = modulation >= gate.sine_min_modulation_u8
+        full_frame_valid_ratio = float(np.mean(valid))
+        valid_ratio = float(np.mean(valid[active])) if active is not None and np.any(active) else 0.0
         result["sine"] = {
             "median_modulation_u8": float(np.median(modulation)),
             "valid_ratio": valid_ratio,
+            "full_frame_valid_ratio": full_frame_valid_ratio,
+            "evaluation_region": "white_black_active_stage",
             "passed": valid_ratio >= gate.sine_min_valid_ratio,
         }
         if valid_ratio < gate.sine_min_valid_ratio:
