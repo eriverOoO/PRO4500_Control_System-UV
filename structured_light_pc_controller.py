@@ -1339,6 +1339,49 @@ def aruco_prescan_image_path(output_root: Path, role: str) -> Path:
     return aruco_prescan_dir(output_root) / name
 
 
+def aruco_marker_observations(markers: dict[int, Any]) -> dict[str, dict[str, list[list[float]] | list[float]]]:
+    """Serialize detected ArUco geometry for later stage-coordinate calibration."""
+    import numpy as np  # type: ignore
+
+    observations: dict[str, dict[str, list[list[float]] | list[float]]] = {}
+    for marker_id, corners in sorted(markers.items()):
+        polygon = np.asarray(corners, dtype=np.float64).reshape(4, 2)
+        observations[str(marker_id)] = {
+            "corners_px": polygon.tolist(),
+            "center_px": polygon.mean(axis=0).tolist(),
+        }
+    return observations
+
+
+def copy_aruco_prescan_artifacts(output_root: Path, scan_dir: Path) -> dict[str, Any]:
+    """Keep per-scan ArUco evidence with calibration scans instead of a mutable global copy."""
+    source_dir = aruco_prescan_dir(output_root)
+    destination_dir = scan_dir / "aruco_prescan"
+    filenames = (
+        "prescan_0.png",
+        "prescan_nominal_180.png",
+        "zero_capture.json",
+        "rotated_capture.json",
+    )
+    copied: list[str] = []
+    missing: list[str] = []
+    for filename in filenames:
+        source = source_dir / filename
+        if not source.exists():
+            missing.append(filename)
+            continue
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination_dir / filename)
+        copied.append(filename)
+    return {
+        "status": "copied" if copied else "not_found",
+        "source": str(source_dir),
+        "directory": str(destination_dir) if copied else "",
+        "copied_files": copied,
+        "missing_files": missing,
+    }
+
+
 def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
     """Capture and validate one no-pattern ArUco frame without replacing a good frame on failure."""
     cv2 = import_cv2()
@@ -1375,6 +1418,7 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             "requested_marker_ids": marker_ids,
             "selected_marker_ids": selected_ids,
             "detected_ids": sorted(markers),
+            "marker_observations": aruco_marker_observations(markers),
             "exposure_us": settings.exposure_us,
             "gain_db": settings.gain_db,
             "camera_timestamp_ms": frame.timestamp_ms,
@@ -1965,6 +2009,13 @@ def run_scan(args: argparse.Namespace) -> int:
     scan_dir = output_root / scan_id
     scan_dir.mkdir(parents=True, exist_ok=True)
     stage_precalibration: dict[str, str] = {"status": "not_found"}
+    aruco_prescan_artifacts = copy_aruco_prescan_artifacts(output_root, scan_dir)
+    if aruco_prescan_artifacts["status"] == "copied":
+        print(
+            "[aruco] copied per-scan prescan evidence: "
+            + ", ".join(aruco_prescan_artifacts["copied_files"]),
+            flush=True,
+        )
     configured_precalibration = args.stage_precalibration or (
         aruco_prescan_dir(output_root) / "stage_precalibration.json"
     )
@@ -2430,6 +2481,7 @@ def run_scan(args: argparse.Namespace) -> int:
             ],
             "angles_deg": angles,
             "stage_precalibration": stage_precalibration,
+            "aruco_prescan_artifacts": aruco_prescan_artifacts,
             "metadata": asdict(capture_config.rig),
             "settings": {
                 "settle_ms": effective_pattern_settle_ms(args),

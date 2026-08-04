@@ -7,6 +7,7 @@ from structured_light_pc_controller import (
     ExposureBracket,
     HdrConfig,
     QualityGateConfig,
+    aruco_marker_observations,
     assess_fpp_quality,
     merge_hdr_frames,
     select_structured_light_sequence_bracket,
@@ -137,3 +138,16 @@ def test_quality_gate_measures_gray_and_sine_inside_projected_stage() -> None:
     assert report["gray_pairs"]["009_021"]["full_frame_contrast_valid_ratio"] == 0.36
     assert report["sine"]["valid_ratio"] == 1.0
     assert report["sine"]["full_frame_valid_ratio"] == 0.36
+
+
+def test_aruco_marker_observations_save_corners_and_centers() -> None:
+    observations = aruco_marker_observations(
+        {2: np.array([[1, 2], [5, 2], [5, 6], [1, 6]], dtype=np.float32)}
+    )
+
+    assert observations == {
+        "2": {
+            "corners_px": [[1.0, 2.0], [5.0, 2.0], [5.0, 6.0], [1.0, 6.0]],
+            "center_px": [3.0, 4.0],
+        }
+    }
