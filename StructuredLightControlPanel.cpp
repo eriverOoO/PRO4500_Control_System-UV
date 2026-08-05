@@ -80,6 +80,12 @@ enum ControlId {
     IDC_ARUCO_CAPTURE_ROTATED,
     IDC_ARUCO_CALCULATE,
     IDC_ARUCO_EXPOSURE,
+    IDC_SCAN_TYPE,
+    IDC_RIG_ID,
+    IDC_CALIBRATION_ID,
+    IDC_REFERENCE_SCAN,
+    IDC_FOCUS_CONFIRMED,
+    IDC_SCHEIMPFLUG_CONFIRMED,
 };
 
 enum class JobMode {
@@ -143,6 +149,12 @@ struct AppState {
     HWND arucoCaptureRotated{};
     HWND arucoCalculate{};
     HWND arucoExposure{};
+    HWND scanType{};
+    HWND rigId{};
+    HWND calibrationId{};
+    HWND referenceScan{};
+    HWND focusConfirmed{};
+    HWND scheimpflugConfirmed{};
     PROCESS_INFORMATION jobProcess{};
     PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
@@ -608,6 +620,30 @@ std::wstring build_controller_command(JobMode mode) {
             << L" --aruco-intended-rotation-deg 180";
     }
 
+    if (mode == JobMode::Scan) {
+        // This executable is dedicated to the camera-tilted rig.  Passing the
+        // fixed pose explicitly prevents a stale JSON profile from silently
+        // reverting to the former projector-tilted setup.
+        cmd << L" --rig-layout camera_tilt_30_projector_vertical"
+            << L" --camera-tilt-deg 30"
+            << L" --projector-tilt-deg 0"
+            << L" --no-keystone-predistortion"
+            << L" --scan-type " << quote(get_text(g_app.scanType))
+            << L" --rig-id " << quote(get_text(g_app.rigId))
+            << L" --calibration-id " << quote(get_text(g_app.calibrationId));
+        if (SendMessageW(g_app.focusConfirmed, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            cmd << L" --focus-confirmed";
+        } else {
+            cmd << L" --no-focus-confirmed";
+        }
+        if (SendMessageW(g_app.scheimpflugConfirmed, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            cmd << L" --scheimpflug-confirmed";
+        } else {
+            cmd << L" --no-scheimpflug-confirmed";
+        }
+        append_optional_arg(cmd, L"--reference-scan", g_app.referenceScan);
+    }
+
     return cmd.str();
 }
 
@@ -622,6 +658,12 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.arucoCalculate, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
+    EnableWindow(g_app.scanType, !running);
+    EnableWindow(g_app.rigId, !running);
+    EnableWindow(g_app.calibrationId, !running);
+    EnableWindow(g_app.referenceScan, !running);
+    EnableWindow(g_app.focusConfirmed, !running);
+    EnableWindow(g_app.scheimpflugConfirmed, !running);
     EnableWindow(g_app.stop, running);
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
 }
@@ -796,6 +838,39 @@ void start_job(JobMode mode, const std::wstring& label) {
         return;
     }
     if (mode == JobMode::Scan) {
+        const std::wstring scanType = get_text(g_app.scanType);
+        const std::wstring rigId = get_text(g_app.rigId);
+        const std::wstring calibrationId = get_text(g_app.calibrationId);
+        const std::wstring referenceScan = get_text(g_app.referenceScan);
+        if (scanType != L"reference" && scanType != L"object") {
+            MessageBoxW(g_app.window, L"Scan type must be reference or object.", L"Invalid Scan Type", MB_ICONWARNING);
+            return;
+        }
+        if (rigId.empty() || calibrationId.empty()) {
+            MessageBoxW(
+                g_app.window,
+                L"Enter new camera-tilt rig and calibration IDs. Do not reuse IDs from the former projector-tilt rig.",
+                L"Rig Identity Required",
+                MB_ICONWARNING);
+            return;
+        }
+        if (scanType == L"object" && !file_exists(referenceScan)) {
+            MessageBoxW(
+                g_app.window,
+                L"Object scans require the matching reference scan_log.json so the controller can verify rig and calibration IDs.",
+                L"Reference Scan Required",
+                MB_ICONWARNING);
+            return;
+        }
+        if (SendMessageW(g_app.focusConfirmed, BM_GETCHECK, 0, 0) != BST_CHECKED
+            || SendMessageW(g_app.scheimpflugConfirmed, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+            MessageBoxW(
+                g_app.window,
+                L"Before scanning, confirm camera-side manual focus at the measurement plane and the camera Scheimpflug adjustment across the field.",
+                L"Camera Focus Confirmation Required",
+                MB_ICONWARNING);
+            return;
+        }
         const std::wstring calibration = path_join(
             path_join(get_text(g_app.output), L"aruco_precalibration"),
             L"stage_precalibration.json");
@@ -1055,6 +1130,26 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Output", margin, y + 4, 80, 22);
     g_app.output = make_edit(hwnd, IDC_OUTPUT, path_join(g_app.root, L"captures"), 110, y, 700, 24);
     make_button(hwnd, IDC_BROWSE_OUTPUT, L"Browse", 825, y, 100, 24);
+
+    y += 34;
+    make_label(hwnd, L"Fixed rig", margin, y + 4, 80, 22);
+    make_label(hwnd, L"Camera 30 deg tilt / projector vertical / no keystone pre-distortion", 110, y + 4, 490, 22);
+    make_label(hwnd, L"Scan type", 620, y + 4, 65, 22);
+    g_app.scanType = make_edit(hwnd, IDC_SCAN_TYPE, L"reference", 690, y, 105, 24);
+
+    y += 32;
+    make_label(hwnd, L"New rig ID", margin, y + 4, 80, 22);
+    g_app.rigId = make_edit(hwnd, IDC_RIG_ID, L"", 110, y, 250, 24);
+    make_label(hwnd, L"New calibration ID", 380, y + 4, 120, 22);
+    g_app.calibrationId = make_edit(hwnd, IDC_CALIBRATION_ID, L"", 505, y, 280, 24);
+
+    y += 32;
+    make_label(hwnd, L"Reference log", margin, y + 4, 90, 22);
+    g_app.referenceScan = make_edit(hwnd, IDC_REFERENCE_SCAN, L"", 110, y, 675, 24);
+
+    y += 32;
+    g_app.focusConfirmed = make_checkbox(hwnd, IDC_FOCUS_CONFIRMED, L"Camera manual focus confirmed", margin, y, 220, 24, false);
+    g_app.scheimpflugConfirmed = make_checkbox(hwnd, IDC_SCHEIMPFLUG_CONFIRMED, L"Camera Scheimpflug confirmed", 250, y, 245, 24, false);
 
     y += 38;
     make_label(hwnd, L"Provider", margin, y + 4, 70, 22);
@@ -1368,7 +1463,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         0, kAppClass, L"PRO4500 XIMEA UV Scan Controller",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 800,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 1000,
         nullptr, nullptr, instance, nullptr);
 
     if (!hwnd) return 1;

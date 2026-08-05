@@ -35,8 +35,9 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
   보존되고, 병합된 디코드 이미지는 `pattern_000.png` ...
   `pattern_021.png`로 저장되며, 포화/암부 마스크는 `hdr_masks/` 아래에
   저장됩니다.
-- 기준/물체 스캔 메타데이터: 프로젝터 기울기, 초점 확인, Scheimpflug 확인,
-  리그/캘리브레이션 ID, 프로젝터 밝기, 키스톤 사전 보정 상태.
+- 기준/물체 스캔 메타데이터: 카메라/프로젝터 기울기, 카메라 수동 초점 및
+  카메라 측 Scheimpflug 확인, 새 리그/캘리브레이션 ID, 프로젝터 밝기,
+  키스톤 사전 보정 상태.
 
 ## 파일 구성
 
@@ -131,7 +132,7 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
       ]
     },
     "metadata": {
-      "scan_type": "object",
+      "scan_type": "reference",
       "rig_layout": "camera_tilt_30_projector_vertical",
       "camera_tilt_deg": 30.0,
       "projector_tilt_deg": 0.0,
@@ -146,7 +147,9 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
 }
 ```
 
-`camera_tilt_30_projector_vertical`은 프로젝터 광축을 수직으로 두고 카메라를 30° 기울인 새 리그입니다. 이 profile에서는 기존 리그의 기준면·mm 보정값을 재사용하면 안 됩니다. `rig_id`와 `calibration_id`를 새 리그용 값으로 지정한 뒤, 빈 스테이지 기준면과 알려진 높이 보정을 다시 촬영하세요. CLI에서 `--camera-tilt-deg` 또는 `--projector-tilt-deg`를 주는 경우에도 `--rig-layout`의 정해진 자세와 일치해야 합니다.
+`camera_tilt_30_projector_vertical`은 프로젝터 광축을 수직으로 두고 카메라를 30° 기울인 새 리그입니다. 이 profile에서는 기존 리그의 기준면·mm 보정값, `rig_id`, `calibration_id`를 재사용하면 안 됩니다. 새 ID를 지정한 뒤 빈 스테이지 기준면과 알려진 높이 보정을 다시 촬영하세요. 이 profile은 `camera_tilt_deg=30.0`, `projector_tilt_deg=0.0`, `keystone_predistortion=false`만 허용합니다. 프로젝터 패턴은 별도의 keystone pre-distortion 없이 원본대로 표시됩니다.
+
+촬영 전에는 프로젝터가 아니라 **30° 기울어진 카메라 측**에서 초점과 Scheimpflug를 맞춥니다. 측정면의 가까운 쪽과 먼 쪽을 번갈아 확인하며 렌즈의 수동 초점과 카메라 Scheimpflug 조정을 반복하고, 전 시야에서 패턴 경계가 선명할 때만 `--focus-confirmed --scheimpflug-confirmed`를 기록하세요.
 
 `dll_path`가 비어 있으면 컨트롤러는 일반적인 XIMEA 설치 경로를 먼저 찾고,
 그다음 시스템 `PATH`를 확인합니다. `XIMEA_XIAPI_DLL` 환경 변수에 DLL 경로를
@@ -239,6 +242,8 @@ XIMEA 연속 미리보기(명령줄 전용):
 현재 프레임 한 장만 우측에 표시하며, 이 프레임은 파일로 저장하지 않습니다. **Start Scan**과
 ArUco 캡처 중에는 각 실제 촬영 프레임만 우측에 표시합니다.
 
+제어 패널의 **Fixed rig** 표시는 `Camera 30 deg tilt / projector vertical / no keystone pre-distortion`로 고정되어 있습니다. Start Scan 전에는 `reference` 또는 `object`를 선택하고 새 `rig ID`, 새 `calibration ID`를 입력하세요. `object`에는 일치하는 reference의 `scan_log.json`을 넣어야 합니다. 또한 카메라 측 수동 초점과 Scheimpflug 확인란을 모두 선택해야 스캔을 시작할 수 있습니다.
+
 미리보기 창을 열지 않고 XIMEA SDK/장치 연결 확인:
 
 ```powershell
@@ -248,7 +253,7 @@ ArUco 캡처 중에는 각 실제 촬영 프레임만 우측에 표시합니다.
 XIMEA 구조광 스캔:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0,180 --rig-id camera_tilt30_rig_20260805 --calibration-id camera_tilt30_cal_20260805 --focus-confirmed --scheimpflug-confirmed
 ```
 
 프로젝터 화면 선택:
@@ -264,12 +269,14 @@ XIMEA 구조광 스캔:
 .\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0
 ```
 
-기준/물체 메타데이터 예시:
+새 리그의 첫 기준/물체 촬영 예시(각 스캔에서 0°와 180°를 같은 ID로 기록):
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --scan-type reference --rig-id uv_rig_01 --calibration-id calib_20260706 --focus-confirmed --scheimpflug-confirmed
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --scan-type object --rig-id uv_rig_01 --calibration-id calib_20260706 --focus-confirmed --scheimpflug-confirmed
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0,180 --rig-layout camera_tilt_30_projector_vertical --camera-tilt-deg 30 --projector-tilt-deg 0 --no-keystone-predistortion --rig-id camera_tilt30_rig_20260805 --calibration-id camera_tilt30_cal_20260805 --focus-confirmed --scheimpflug-confirmed
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --camera-provider ximea --patterns .\generated_patterns_centered --output .\captures --scan-type object --angles 0,180 --rig-layout camera_tilt_30_projector_vertical --camera-tilt-deg 30 --projector-tilt-deg 0 --no-keystone-predistortion --rig-id camera_tilt30_rig_20260805 --calibration-id camera_tilt30_cal_20260805 --focus-confirmed --scheimpflug-confirmed --reference-scan .\captures\reference_20260805_001\scan_log.json
 ```
+
+object 스캔은 `--reference-scan`으로 reference의 `scan_log.json`을 반드시 지정합니다. 컨트롤러는 촬영을 시작하기 전에 reference/object의 `rig_layout`, 두 tilt, `keystone_predistortion`, `rig_id`, `calibration_id`를 비교해 하나라도 다르면 중단합니다. 새 리그에서는 빈 `rig_id` 또는 `calibration_id`도 촬영 전에 오류가 됩니다.
 
 기존 도구용 14패턴 레거시 스캔:
 
@@ -302,9 +309,10 @@ captures/<scan_id>/
 - `hdr_merge_report.json`
 - `scan_log.csv`
 
-`scan_log.json`에는 고정 패턴 ID/라벨 계약, 최종 파일명, 브래킷 파일명,
-노출/게인 값, 카메라 프레임 메타데이터, HDR 임계값, 병합 통계,
-기준/물체 리그 메타데이터가 기록됩니다. 컨트롤러는 스캔 완료 전에
+`scan_log.json`과 `hdr_merge_report.json`에는 같은 리그 metadata schema와
+reference 연결 정보가 기록됩니다. metadata에는 고정 패턴 ID/라벨 계약, 최종 파일명,
+브래킷 파일명, 노출/게인 값, 카메라 프레임 메타데이터, HDR 임계값, 병합 통계,
+기준/물체 리그 메타데이터가 포함됩니다. 컨트롤러는 스캔 완료 전에
 예상되는 모든 최종 패턴 ID가 존재하는지 검증합니다.
 
 단일/연속 캡처 모드는 이미지와 `capture_log.json`이 들어 있는 캡처 폴더를

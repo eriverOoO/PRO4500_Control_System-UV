@@ -81,7 +81,7 @@
       "max_decoder_dark_ratio": 0.8
     },
     "metadata": {
-      "scan_type": "object",
+      "scan_type": "reference",
       "rig_layout": "camera_tilt_30_projector_vertical",
       "camera_tilt_deg": 30.0,
       "projector_tilt_deg": 0.0,
