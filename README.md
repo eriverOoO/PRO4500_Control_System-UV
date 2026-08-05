@@ -132,7 +132,9 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
     },
     "metadata": {
       "scan_type": "object",
-      "projector_tilt_deg": 30.0,
+      "rig_layout": "camera_tilt_30_projector_vertical",
+      "camera_tilt_deg": 30.0,
+      "projector_tilt_deg": 0.0,
       "focus_confirmed": false,
       "scheimpflug_confirmed": false,
       "rig_id": "",
@@ -143,6 +145,8 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
   }
 }
 ```
+
+`camera_tilt_30_projector_vertical`은 프로젝터 광축을 수직으로 두고 카메라를 30° 기울인 새 리그입니다. 이 profile에서는 기존 리그의 기준면·mm 보정값을 재사용하면 안 됩니다. `rig_id`와 `calibration_id`를 새 리그용 값으로 지정한 뒤, 빈 스테이지 기준면과 알려진 높이 보정을 다시 촬영하세요. CLI에서 `--camera-tilt-deg` 또는 `--projector-tilt-deg`를 주는 경우에도 `--rig-layout`의 정해진 자세와 일치해야 합니다.
 
 `dll_path`가 비어 있으면 컨트롤러는 일반적인 XIMEA 설치 경로를 먼저 찾고,
 그다음 시스템 `PATH`를 확인합니다. `XIMEA_XIAPI_DLL` 환경 변수에 DLL 경로를

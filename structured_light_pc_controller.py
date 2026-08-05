@@ -130,6 +130,8 @@ class HdrConfig:
 @dataclass(frozen=True)
 class RigMetadata:
     scan_type: str
+    rig_layout: str
+    camera_tilt_deg: float
     projector_tilt_deg: float
     focus_confirmed: bool
     scheimpflug_confirmed: bool
@@ -137,6 +139,14 @@ class RigMetadata:
     calibration_id: str
     projector_brightness: str
     keystone_predistortion: bool
+
+
+RIG_LAYOUT_PROJECTOR_TILT_30 = "projector_tilt_30_camera_vertical"
+RIG_LAYOUT_CAMERA_TILT_30 = "camera_tilt_30_projector_vertical"
+RIG_LAYOUT_POSES = {
+    RIG_LAYOUT_PROJECTOR_TILT_30: {"camera_tilt_deg": 0.0, "projector_tilt_deg": 30.0},
+    RIG_LAYOUT_CAMERA_TILT_30: {"camera_tilt_deg": 30.0, "projector_tilt_deg": 0.0},
+}
 
 
 @dataclass(frozen=True)
@@ -473,6 +483,36 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
         if args.keystone_predistortion is not None
         else parse_bool(metadata_section.get("keystone_predistortion"), False)
     )
+    rig_layout = str(
+        args.rig_layout
+        if args.rig_layout is not None
+        else metadata_section.get("rig_layout", RIG_LAYOUT_CAMERA_TILT_30)
+    )
+    if rig_layout not in RIG_LAYOUT_POSES:
+        raise SystemExit(
+            "rig_layout must be one of: " + ", ".join(sorted(RIG_LAYOUT_POSES))
+        )
+    expected_pose = RIG_LAYOUT_POSES[rig_layout]
+    camera_tilt_deg = float(
+        args.camera_tilt_deg
+        if args.camera_tilt_deg is not None
+        else metadata_section.get("camera_tilt_deg", expected_pose["camera_tilt_deg"])
+    )
+    projector_tilt_deg = float(
+        args.projector_tilt_deg
+        if args.projector_tilt_deg is not None
+        else metadata_section.get("projector_tilt_deg", expected_pose["projector_tilt_deg"])
+    )
+    if not (
+        math.isclose(camera_tilt_deg, expected_pose["camera_tilt_deg"], abs_tol=1e-6)
+        and math.isclose(projector_tilt_deg, expected_pose["projector_tilt_deg"], abs_tol=1e-6)
+    ):
+        raise SystemExit(
+            f"rig_layout {rig_layout!r} requires camera_tilt_deg="
+            f"{expected_pose['camera_tilt_deg']:g} and projector_tilt_deg="
+            f"{expected_pose['projector_tilt_deg']:g}; got "
+            f"{camera_tilt_deg:g}/{projector_tilt_deg:g}"
+        )
 
     return CaptureConfig(
         hdr=HdrConfig(
@@ -486,7 +526,9 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
         ),
         rig=RigMetadata(
             scan_type=scan_type,
-            projector_tilt_deg=float(args.projector_tilt_deg if args.projector_tilt_deg is not None else metadata_section.get("projector_tilt_deg", 30.0)),
+            rig_layout=rig_layout,
+            camera_tilt_deg=camera_tilt_deg,
+            projector_tilt_deg=projector_tilt_deg,
             focus_confirmed=focus_confirmed,
             scheimpflug_confirmed=scheimpflug_confirmed,
             rig_id=str(args.rig_id if args.rig_id is not None else metadata_section.get("rig_id", "")),
@@ -2873,6 +2915,8 @@ def parse_args() -> argparse.Namespace:
         help="Optional decoder-compatible ArUco precalibration JSON to copy into each scan folder.",
     )
     parser.add_argument("--scan-type", choices=("reference", "object"))
+    parser.add_argument("--rig-layout", choices=tuple(sorted(RIG_LAYOUT_POSES)))
+    parser.add_argument("--camera-tilt-deg", type=float)
     parser.add_argument("--projector-tilt-deg", type=float)
     parser.add_argument("--focus-confirmed", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--scheimpflug-confirmed", action=argparse.BooleanOptionalAction, default=None)

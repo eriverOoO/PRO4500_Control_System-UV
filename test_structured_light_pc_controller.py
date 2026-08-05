@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import sys
+
 import cv2
 import numpy as np
+import pytest
 
 from structured_light_pc_controller import (
     ExposureBracket,
@@ -11,9 +15,59 @@ from structured_light_pc_controller import (
     aruco_marker_observations,
     assess_fpp_quality,
     merge_hdr_frames,
+    load_capture_config,
+    parse_args,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
 )
+
+
+def _capture_args(monkeypatch, config_path, *extra: str):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["structured_light_pc_controller.py", "--camera-config", str(config_path), *extra],
+    )
+    return parse_args()
+
+
+def test_camera_tilt_rig_profile_is_serialized_from_capture_config(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "camera_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "metadata": {
+                        "rig_layout": "camera_tilt_30_projector_vertical",
+                        "camera_tilt_deg": 30.0,
+                        "projector_tilt_deg": 0.0,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    capture_config = load_capture_config(_capture_args(monkeypatch, config_path))
+
+    assert capture_config.rig.rig_layout == "camera_tilt_30_projector_vertical"
+    assert capture_config.rig.camera_tilt_deg == 30.0
+    assert capture_config.rig.projector_tilt_deg == 0.0
+
+
+def test_camera_tilt_rig_profile_rejects_conflicting_cli_pose(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "camera_config.json"
+    config_path.write_text(
+        json.dumps(
+            {"capture": {"metadata": {"rig_layout": "camera_tilt_30_projector_vertical"}}}
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="requires camera_tilt_deg=30"):
+        load_capture_config(
+            _capture_args(monkeypatch, config_path, "--projector-tilt-deg", "30")
+        )
 
 
 def _quality_gate() -> QualityGateConfig:

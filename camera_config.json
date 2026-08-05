@@ -82,7 +82,9 @@
     },
     "metadata": {
       "scan_type": "object",
-      "projector_tilt_deg": 30.0,
+      "rig_layout": "camera_tilt_30_projector_vertical",
+      "camera_tilt_deg": 30.0,
+      "projector_tilt_deg": 0.0,
       "focus_confirmed": false,
       "scheimpflug_confirmed": false,
       "rig_id": "",
