@@ -147,6 +147,7 @@ RIG_LAYOUT_POSES = {
     RIG_LAYOUT_PROJECTOR_TILT_30: {"camera_tilt_deg": 0.0, "projector_tilt_deg": 30.0},
     RIG_LAYOUT_CAMERA_TILT_30: {"camera_tilt_deg": 30.0, "projector_tilt_deg": 0.0},
 }
+RIG_METADATA_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -550,6 +551,83 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             max_decoder_dark_ratio=float(quality_section.get("max_decoder_dark_ratio", 0.80)),
         ),
     )
+
+
+def rig_metadata_dict(rig: RigMetadata) -> dict[str, Any]:
+    """Return the stable rig identity written to every scan artifact."""
+    return asdict(rig)
+
+
+def read_reference_rig_metadata(reference_scan: Path) -> dict[str, Any]:
+    """Read the capture identity from a completed reference scan log."""
+    if not reference_scan.is_file():
+        raise SystemExit(f"--reference-scan must name an existing scan_log.json: {reference_scan}")
+    reference_log = read_json_file(reference_scan)
+    metadata = reference_log.get("metadata")
+    if reference_log.get("scan_type") != "reference" or not isinstance(metadata, dict):
+        raise SystemExit(
+            "--reference-scan must be a reference scan_log.json with a metadata object"
+        )
+    return metadata
+
+
+def validate_rig_capture_contract(args: argparse.Namespace, rig: RigMetadata) -> dict[str, Any]:
+    """Reject unsafe/new-rig identity combinations before any camera activity."""
+    if rig.rig_layout == RIG_LAYOUT_CAMERA_TILT_30 and rig.keystone_predistortion:
+        raise SystemExit(
+            "camera_tilt_30_projector_vertical requires keystone_predistortion=false; "
+            "projector patterns must be displayed without keystone pre-distortion"
+        )
+
+    missing_ids = [
+        field_name
+        for field_name, value in (("rig_id", rig.rig_id), ("calibration_id", rig.calibration_id))
+        if not value.strip()
+    ]
+    if missing_ids:
+        raise SystemExit(
+            f"{rig.rig_layout} requires non-empty " + ", ".join(missing_ids)
+            + " before capture; create new IDs for this rig and do not reuse the former projector-tilt rig IDs"
+        )
+
+    reference_scan = args.reference_scan
+    if rig.scan_type == "reference":
+        if reference_scan is not None:
+            raise SystemExit("--reference-scan is only valid with --scan-type object")
+        return {"status": "reference_capture", "scan_log": None}
+
+    if reference_scan is None:
+        raise SystemExit(
+            "--scan-type object requires --reference-scan <reference scan_log.json> "
+            "to verify rig_id and calibration_id before capture"
+        )
+
+    reference_metadata = read_reference_rig_metadata(reference_scan)
+    expected = rig_metadata_dict(rig)
+    required_fields = (
+        "rig_layout",
+        "camera_tilt_deg",
+        "projector_tilt_deg",
+        "keystone_predistortion",
+        "rig_id",
+        "calibration_id",
+    )
+    conflicts = [
+        field_name
+        for field_name in required_fields
+        if reference_metadata.get(field_name) != expected[field_name]
+    ]
+    if conflicts:
+        raise SystemExit(
+            "reference/object rig metadata mismatch for " + ", ".join(conflicts)
+            + "; recapture the reference or use its exact new-rig IDs and pose"
+        )
+    return {
+        "status": "verified",
+        "scan_log": str(reference_scan.resolve()),
+        "scan_id": reference_scan.parent.name,
+        "metadata": {field_name: reference_metadata[field_name] for field_name in required_fields},
+    }
 
 
 def write_image(cv2, path: Path, image: Any) -> int:
@@ -2063,6 +2141,7 @@ def run_scan(args: argparse.Namespace) -> int:
     patterns = load_pattern_specs(pattern_dir, legacy_14_patterns=args.legacy_14_patterns)
     first_image = pattern_image(cv2, patterns[0])
     capture_config = load_capture_config(args)
+    reference_link = validate_rig_capture_contract(args, capture_config.rig)
     hdr = capture_config.hdr
     if not hdr.enabled:
         hdr = HdrConfig(
@@ -2155,6 +2234,16 @@ def run_scan(args: argparse.Namespace) -> int:
     print(
         f"[scan] scan_id={scan_id} scan_type={capture_config.rig.scan_type} "
         f"patterns={len(patterns)} angles={angles} brackets={len(hdr.brackets)}",
+        flush=True,
+    )
+    print(
+        "[rig] "
+        f"layout={capture_config.rig.rig_layout} "
+        f"camera_tilt_deg={capture_config.rig.camera_tilt_deg:g} "
+        f"projector_tilt_deg={capture_config.rig.projector_tilt_deg:g} "
+        f"rig_id={capture_config.rig.rig_id} "
+        f"calibration_id={capture_config.rig.calibration_id} "
+        f"reference={reference_link['status']}",
         flush=True,
     )
     print(
@@ -2583,7 +2672,9 @@ def run_scan(args: argparse.Namespace) -> int:
             "angles_deg": angles,
             "stage_precalibration": stage_precalibration,
             "aruco_prescan_artifacts": aruco_prescan_artifacts,
-            "metadata": asdict(capture_config.rig),
+            "rig_metadata_schema_version": RIG_METADATA_SCHEMA_VERSION,
+            "metadata": rig_metadata_dict(capture_config.rig),
+            "reference_link": reference_link,
             "settings": {
                 "settle_ms": effective_pattern_settle_ms(args),
                 "bracket_settle_ms": args.bracket_settle_ms,
@@ -2617,6 +2708,9 @@ def run_scan(args: argparse.Namespace) -> int:
                     "scan_id": scan_id,
                     "created_at": datetime.now().isoformat(timespec="seconds"),
                     "scan_type": capture_config.rig.scan_type,
+                    "rig_metadata_schema_version": RIG_METADATA_SCHEMA_VERSION,
+                    "metadata": rig_metadata_dict(capture_config.rig),
+                    "reference_link": reference_link,
                     "patterns": hdr_reports,
                 },
                 indent=2,
@@ -2922,6 +3016,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheimpflug-confirmed", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--rig-id")
     parser.add_argument("--calibration-id")
+    parser.add_argument(
+        "--reference-scan",
+        type=Path,
+        help="Reference scan_log.json required for object scans; its new-rig metadata must match.",
+    )
     parser.add_argument("--projector-brightness")
     parser.add_argument("--keystone-predistortion", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--no-display", action="store_true")

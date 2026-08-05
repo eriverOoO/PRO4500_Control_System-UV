@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import pytest
 
+import structured_light_pc_controller as controller
 from structured_light_pc_controller import (
     ExposureBracket,
     HdrConfig,
@@ -17,8 +18,10 @@ from structured_light_pc_controller import (
     merge_hdr_frames,
     load_capture_config,
     parse_args,
+    run_scan,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
+    validate_rig_capture_contract,
 )
 
 
@@ -68,6 +71,152 @@ def test_camera_tilt_rig_profile_rejects_conflicting_cli_pose(tmp_path, monkeypa
         load_capture_config(
             _capture_args(monkeypatch, config_path, "--projector-tilt-deg", "30")
         )
+
+
+def test_camera_tilt_rig_rejects_keystone_predistortion_and_empty_ids(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "camera_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "metadata": {
+                        "rig_layout": "camera_tilt_30_projector_vertical",
+                        "camera_tilt_deg": 30.0,
+                        "projector_tilt_deg": 0.0,
+                        "keystone_predistortion": True,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="keystone_predistortion=false"):
+        args = _capture_args(monkeypatch, config_path, "--dry-run")
+        validate_rig_capture_contract(args, load_capture_config(args).rig)
+
+    config_path.write_text(
+        json.dumps({"capture": {"metadata": {"rig_layout": "camera_tilt_30_projector_vertical"}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="non-empty rig_id, calibration_id"):
+        args = _capture_args(monkeypatch, config_path, "--dry-run")
+        validate_rig_capture_contract(args, load_capture_config(args).rig)
+
+
+def _write_pattern_set(pattern_dir) -> None:
+    pattern_dir.mkdir()
+    for pattern_id in range(22):
+        image = np.full((12, 16), 255 if pattern_id == 0 else 32, dtype=np.uint8)
+        assert cv2.imwrite(str(pattern_dir / f"pattern_{pattern_id:03d}.png"), image)
+
+
+def test_dry_run_records_new_rig_metadata_and_verifies_reference_object_ids(tmp_path, monkeypatch) -> None:
+    patterns = tmp_path / "patterns"
+    output = tmp_path / "captures"
+    config_path = tmp_path / "camera_config.json"
+    _write_pattern_set(patterns)
+    config_path.write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "quality_gate": {"enabled": False},
+                    "metadata": {
+                        "rig_layout": "camera_tilt_30_projector_vertical",
+                        "camera_tilt_deg": 30.0,
+                        "projector_tilt_deg": 0.0,
+                        "rig_id": "camera_tilt30_rig_20260805",
+                        "calibration_id": "camera_tilt30_cal_20260805",
+                        "keystone_predistortion": False,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(controller.time, "sleep", lambda _seconds: None)
+
+    assert run_scan(
+        _capture_args(
+            monkeypatch,
+            config_path,
+            "--dry-run", "--no-quality-gate", "--patterns", str(patterns),
+            "--output", str(output), "--scan-id", "reference_001", "--scan-type", "reference",
+            "--angles", "0,180", "--no-angle-prompt",
+        )
+    ) == 0
+    reference_log = output / "reference_001" / "scan_log.json"
+    assert run_scan(
+        _capture_args(
+            monkeypatch,
+            config_path,
+            "--dry-run", "--no-quality-gate", "--patterns", str(patterns),
+            "--output", str(output), "--scan-id", "object_001", "--scan-type", "object",
+            "--angles", "0,180", "--no-angle-prompt", "--reference-scan", str(reference_log),
+        )
+    ) == 0
+
+    scan_log = json.loads((output / "object_001" / "scan_log.json").read_text(encoding="utf-8"))
+    hdr_report = json.loads((output / "object_001" / "hdr_merge_report.json").read_text(encoding="utf-8"))
+    expected_metadata = {
+        "scan_type": "object",
+        "rig_layout": "camera_tilt_30_projector_vertical",
+        "camera_tilt_deg": 30.0,
+        "projector_tilt_deg": 0.0,
+        "focus_confirmed": False,
+        "scheimpflug_confirmed": False,
+        "rig_id": "camera_tilt30_rig_20260805",
+        "calibration_id": "camera_tilt30_cal_20260805",
+        "projector_brightness": "",
+        "keystone_predistortion": False,
+    }
+    assert scan_log["rig_metadata_schema_version"] == 1
+    assert scan_log["metadata"] == expected_metadata
+    assert hdr_report["metadata"] == expected_metadata
+    assert scan_log["reference_link"]["status"] == "verified"
+    assert {row["angle_deg"] for row in scan_log["final_patterns"]} == {0, 180}
+
+
+def test_object_capture_rejects_reference_with_different_calibration_id(tmp_path, monkeypatch) -> None:
+    reference_log = tmp_path / "scan_log.json"
+    reference_log.write_text(
+        json.dumps(
+            {
+                "scan_type": "reference",
+                "metadata": {
+                    "rig_layout": "camera_tilt_30_projector_vertical",
+                    "camera_tilt_deg": 30.0,
+                    "projector_tilt_deg": 0.0,
+                    "keystone_predistortion": False,
+                    "rig_id": "new_rig",
+                    "calibration_id": "different_calibration",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "camera_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "metadata": {
+                        "rig_layout": "camera_tilt_30_projector_vertical",
+                        "rig_id": "new_rig",
+                        "calibration_id": "current_calibration",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="metadata mismatch.*calibration_id"):
+        args = _capture_args(
+            monkeypatch, config_path, "--dry-run", "--scan-type", "object",
+            "--reference-scan", str(reference_log),
+        )
+        validate_rig_capture_contract(args, load_capture_config(args).rig)
 
 
 def _quality_gate() -> QualityGateConfig:
