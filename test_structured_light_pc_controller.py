@@ -19,6 +19,7 @@ from structured_light_pc_controller import (
 def _quality_gate() -> QualityGateConfig:
     return QualityGateConfig(
         enabled=True,
+        enforcement="record_only",
         white_black_min_contrast_u8=20.0,
         gray_pair_min_valid_ratio=0.05,
         sine_min_modulation_u8=12.0,

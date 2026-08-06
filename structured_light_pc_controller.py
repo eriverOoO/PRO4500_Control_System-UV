@@ -149,6 +149,7 @@ class CaptureConfig:
 @dataclass(frozen=True)
 class QualityGateConfig:
     enabled: bool
+    enforcement: str
     white_black_min_contrast_u8: float
     gray_pair_min_valid_ratio: float
     sine_min_modulation_u8: float
@@ -436,6 +437,9 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     hdr_section = capture_section.get("hdr", {})
     quality_section = capture_section.get("quality_gate", {})
     metadata_section = capture_section.get("metadata", {})
+    quality_enforcement = str(quality_section.get("enforcement", "record_only")).strip().lower()
+    if quality_enforcement not in ("record_only", "block"):
+        raise ValueError("capture.quality_gate.enforcement must be 'record_only' or 'block'")
 
     bracket_items = hdr_section.get("brackets", [])
     brackets: list[ExposureBracket] = []
@@ -500,6 +504,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
                 if args.quality_gate is not None
                 else parse_bool(quality_section.get("enabled"), True)
             ),
+            enforcement=quality_enforcement,
             white_black_min_contrast_u8=float(quality_section.get("white_black_min_contrast_u8", 20.0)),
             gray_pair_min_valid_ratio=float(quality_section.get("gray_pair_min_valid_ratio", 0.05)),
             sine_min_modulation_u8=float(quality_section.get("sine_min_modulation_u8", 12.0)),
@@ -1889,7 +1894,7 @@ def record_pre_capture_display_witness(
 
 
 def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpec], capture_config: CaptureConfig) -> dict[str, Any]:
-    """Capture a preflight diagnostic set; quality failures are reported, not raised."""
+    """Capture a preflight diagnostic set before optionally blocking the main scan."""
     cv2 = import_cv2()
     hdr = capture_config.hdr
     requested = {spec.pattern_id: spec for spec in patterns}
@@ -1966,8 +1971,8 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "output_dir": str(output_dir),
                 "mode": "preflight",
-                "enforcement": "record_only",
-                "status": "passed" if report["passed"] else "failed_continued",
+                "enforcement": capture_config.quality_gate.enforcement,
+                "status": "passed" if report["passed"] else "failed",
             }
         )
         write_quality_histogram(cv2, merged_images, output_dir / "blue_channel_histograms.png")
@@ -2050,9 +2055,17 @@ def run_scan(args: argparse.Namespace) -> int:
         try:
             quality_gate_report = run_capture_quality_gate(args, patterns, quality_config)
         except (CameraError, RuntimeError, ValueError) as exc:
-            # Capture/configuration faults are still fatal.  Criteria failures are
-            # returned by run_capture_quality_gate and handled below as warnings.
             print(f"[quality] ERROR: preflight could not run: {exc}", flush=True)
+            return 1
+        if (
+            not quality_gate_report.get("passed", False)
+            and capture_config.quality_gate.enforcement == "block"
+        ):
+            print(
+                "[quality] ERROR: preflight failed; main scan blocked. "
+                f"Inspect {quality_gate_report.get('output_dir', 'the preflight report')}.",
+                flush=True,
+            )
             return 1
 
     output_root = args.output.resolve()

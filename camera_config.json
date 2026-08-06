@@ -56,23 +56,24 @@
       "brackets": [
         {
           "name": "short",
-          "exposure_us": 4500,
+          "exposure_us": 15000,
           "gain_db": 0.0
         },
         {
           "name": "mid",
-          "exposure_us": 6500,
+          "exposure_us": 30000,
           "gain_db": 0.0
         },
         {
           "name": "long",
-          "exposure_us": 9500,
+          "exposure_us": 60000,
           "gain_db": 0.0
         }
       ]
     },
     "quality_gate": {
       "enabled": true,
+      "enforcement": "record_only",
       "white_black_min_contrast_u8": 20.0,
       "gray_pair_min_valid_ratio": 0.05,
       "sine_min_modulation_u8": 12.0,
