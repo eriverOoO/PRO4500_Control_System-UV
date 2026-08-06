@@ -4,7 +4,7 @@
     "ximea": {
       "device_index": 0,
       "dll_path": "",
-      "exposure_us": 4500,
+      "exposure_us": 15000,
       "gain_db": 0.0,
       "fps": 10.0,
       "trigger_mode": "software",
@@ -46,30 +46,13 @@
       "marker_center_radius_mm": 42.0,
       "stage_diameter_mm": 105.0
     },
-    "hdr": {
-      "enabled": true,
-      "output_bit_depth": 16,
+    "single_exposure": {
+      "exposure_us": 15000,
+      "gain_db": 0.0,
+      "output_bit_depth": 8,
       "saturated_threshold": 250,
       "dark_threshold": 5,
-      "black_offset": 0.0,
-      "selection_headroom_threshold": 235,
-      "brackets": [
-        {
-          "name": "short",
-          "exposure_us": 15000,
-          "gain_db": 0.0
-        },
-        {
-          "name": "mid",
-          "exposure_us": 30000,
-          "gain_db": 0.0
-        },
-        {
-          "name": "long",
-          "exposure_us": 60000,
-          "gain_db": 0.0
-        }
-      ]
+      "black_offset": 0.0
     },
     "quality_gate": {
       "enabled": true,

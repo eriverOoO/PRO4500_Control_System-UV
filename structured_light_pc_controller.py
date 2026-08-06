@@ -377,86 +377,31 @@ def parse_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def default_hdr_brackets(args: argparse.Namespace) -> tuple[ExposureBracket, ...]:
-    gain_db = float(args.gain_db if args.gain_db is not None else 0.0)
-    return (
-        ExposureBracket("short", 2500, gain_db),
-        ExposureBracket("mid", 14000, gain_db),
-        ExposureBracket("long", 80000, gain_db),
-    )
-
-
-def bracket_overrides(args: argparse.Namespace) -> dict[str, tuple[int | None, float | None]]:
-    return {
-        "short": (args.short_exposure_us, args.short_gain_db),
-        "mid": (args.mid_exposure_us, args.mid_gain_db),
-        "long": (args.long_exposure_us, args.long_gain_db),
-    }
-
-
-def apply_bracket_overrides(
-    brackets: list[ExposureBracket],
-    overrides: dict[str, tuple[int | None, float | None]],
-) -> list[ExposureBracket]:
-    updated: list[ExposureBracket] = []
-    seen: set[str] = set()
-    for bracket in brackets:
-        key = bracket.name.lower()
-        exposure_override, gain_override = overrides.get(key, (None, None))
-        seen.add(key)
-        updated.append(
-            ExposureBracket(
-                name=bracket.name,
-                exposure_us=max(1, int(exposure_override if exposure_override is not None else bracket.exposure_us)),
-                gain_db=float(gain_override if gain_override is not None else bracket.gain_db),
-            )
-        )
-
-    for name in ("short", "mid", "long"):
-        exposure_override, gain_override = overrides[name]
-        if name in seen or (exposure_override is None and gain_override is None):
-            continue
-        default_exposure = int(args_default_exposures()[name])
-        updated.append(
-            ExposureBracket(
-                name=name,
-                exposure_us=max(1, int(exposure_override if exposure_override is not None else default_exposure)),
-                gain_db=float(gain_override if gain_override is not None else 0.0),
-            )
-        )
-    return updated
-
-
-def args_default_exposures() -> dict[str, int]:
-    return {"short": 2500, "mid": 14000, "long": 80000}
-
-
 def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     config = read_json_file(args.camera_config)
     capture_section = config.get("capture", {})
-    hdr_section = capture_section.get("hdr", {})
+    single_section = capture_section.get("single_exposure", {})
     quality_section = capture_section.get("quality_gate", {})
     metadata_section = capture_section.get("metadata", {})
     quality_enforcement = str(quality_section.get("enforcement", "record_only")).strip().lower()
     if quality_enforcement not in ("record_only", "block"):
         raise ValueError("capture.quality_gate.enforcement must be 'record_only' or 'block'")
 
-    bracket_items = hdr_section.get("brackets", [])
-    brackets: list[ExposureBracket] = []
-    for index, item in enumerate(bracket_items):
-        if not isinstance(item, dict):
-            continue
-        name = safe_filename_token(str(item.get("name") or f"bracket_{index:02d}"))
-        exposure_us = int(item.get("exposure_us", args.exposure_us or 20000))
-        gain_db = float(item.get("gain_db", args.gain_db if args.gain_db is not None else 0.0))
-        brackets.append(ExposureBracket(name=name, exposure_us=max(1, exposure_us), gain_db=gain_db))
-    if not brackets:
-        brackets = list(default_hdr_brackets(args))
-    brackets = apply_bracket_overrides(brackets, bracket_overrides(args))
-
-    output_bit_depth = int(hdr_section.get("output_bit_depth", 16))
+    if "hdr" in capture_section:
+        raise SystemExit("capture.hdr is no longer supported; use capture.single_exposure")
+    exposure_us = int(
+        args.exposure_us
+        if args.exposure_us is not None
+        else single_section.get("exposure_us", 15000)
+    )
+    if exposure_us < 1:
+        raise SystemExit("capture.single_exposure.exposure_us must be at least 1")
+    gain_db = float(
+        args.gain_db if args.gain_db is not None else single_section.get("gain_db", 0.0)
+    )
+    output_bit_depth = int(single_section.get("output_bit_depth", 8))
     if output_bit_depth not in {8, 16}:
-        raise SystemExit("capture.hdr.output_bit_depth must be 8 or 16")
+        raise SystemExit("capture.single_exposure.output_bit_depth must be 8 or 16")
 
     scan_type = args.scan_type or str(metadata_section.get("scan_type", "object"))
     if scan_type not in {"reference", "object"}:
@@ -480,13 +425,13 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
 
     return CaptureConfig(
         hdr=HdrConfig(
-            enabled=parse_bool(hdr_section.get("enabled"), True),
+            enabled=False,
             output_bit_depth=output_bit_depth,
-            saturated_threshold=int(hdr_section.get("saturated_threshold", 250)),
-            dark_threshold=int(hdr_section.get("dark_threshold", 5)),
-            black_offset=float(hdr_section.get("black_offset", 0.0)),
-            selection_headroom_threshold=int(hdr_section.get("selection_headroom_threshold", 235)),
-            brackets=tuple(brackets),
+            saturated_threshold=int(single_section.get("saturated_threshold", 250)),
+            dark_threshold=int(single_section.get("dark_threshold", 5)),
+            black_offset=float(single_section.get("black_offset", 0.0)),
+            selection_headroom_threshold=235,
+            brackets=(ExposureBracket("single", exposure_us, gain_db),),
         ),
         rig=RigMetadata(
             scan_type=scan_type,
@@ -638,7 +583,7 @@ def open_camera(
 ) -> tuple[CameraInterface, CameraSettings]:
     overrides = camera_overrides(args)
     # A mode-specific profile takes precedence over common GUI camera controls.
-    # This keeps the main scan's software trigger and HDR operation independent.
+    # Preview and ArUco captures therefore remain independent of the fixed scan profile.
     overrides.update(profile_overrides or {})
     if exposure_us is not None:
         if exposure_us < 1:
@@ -1808,15 +1753,11 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
         }
         if valid_ratio < gate.sine_min_valid_ratio:
             failures.append(f"Sine modulation valid={valid_ratio:.3f}")
-    # Final 16-bit HDR values are radiance-normalized to the longest bracket.
-    # Their near-white ratio is retained above as a decoder-facing diagnostic,
-    # but it is not a sensor-clipping gate. The preflight adds raw all-bracket
-    # saturation/dark checks, which distinguish real clipping from valid White.
     result["passed"] = not failures
     result["failures"] = failures
     result["recommendations"] = (
         [] if not failures else [
-            "Reduce the long HDR exposure or projector brightness when decoder saturation is high.",
+            "Reduce the fixed camera exposure or projector brightness when decoder saturation is high.",
             "Block ambient light and verify projector focus when White/Black or Gray contrast is low.",
             "Check projector pattern timing and camera focus when sine modulation is low.",
         ]
@@ -1872,8 +1813,6 @@ def record_pre_capture_display_witness(
     # disposable frames here makes the timing explicit and covers providers that do.
     bracket = hdr.brackets[0]
     camera.configure_capture(exposure_us=bracket.exposure_us, gain_db=bracket.gain_db)
-    if args.bracket_settle_ms > 0:
-        time.sleep(args.bracket_settle_ms / 1000.0)
     discarded_indices: list[int] = []
     for _ in range(max(0, args.settle_flush_frames)):
         discarded_indices.append(camera.capture_frame().frame_index)
@@ -1933,7 +1872,6 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
             for bracket in hdr.brackets:
                 if camera is not None:
                     camera.configure_capture(exposure_us=bracket.exposure_us, gain_db=bracket.gain_db)
-                    time.sleep(args.bracket_settle_ms / 1000.0)
                     frame = camera.capture_frame()
                     image = frame.image
                     offsets.append(float(frame.metadata.get("black_level", hdr.black_offset)))
@@ -1950,20 +1888,20 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
             write_image(cv2, output_dir / "masks" / mask_filename(spec.pattern_id, "dark"), dark)
             write_image(cv2, output_dir / "masks" / mask_filename(spec.pattern_id, "selected_bracket"), selected_map)
         report = assess_fpp_quality(cv2, merged_images, hdr, capture_config.quality_gate)
-        raw_hdr_checks: dict[str, Any] = {}
-        for pattern_id, merge in merge_reports.items():
-            total = max(1, int(merged_images[pattern_id].size))
-            saturated_ratio = float(merge["saturated_pixel_count"] / total)
-            dark_ratio = float(merge["dark_pixel_count"] / total)
-            raw_hdr_checks[str(pattern_id)] = {
-                "all_brackets_saturated_ratio": saturated_ratio,
-                "all_brackets_dark_ratio": dark_ratio,
+        raw_sensor_checks: dict[str, Any] = {}
+        for pattern_id in merge_reports:
+            stats = report["patterns"][str(pattern_id)]
+            saturated_ratio = float(stats["decoder_saturation_ratio"])
+            dark_ratio = float(stats["decoder_dark_ratio"])
+            raw_sensor_checks[str(pattern_id)] = {
+                "sensor_saturation_ratio": saturated_ratio,
+                "sensor_dark_ratio": dark_ratio,
             }
             if saturated_ratio > capture_config.quality_gate.max_decoder_saturation_ratio:
                 report["failures"].append(f"pattern {pattern_id:03d} raw sensor saturation={saturated_ratio:.3f}")
             if pattern_id != 1 and dark_ratio > capture_config.quality_gate.max_decoder_dark_ratio:
                 report["failures"].append(f"pattern {pattern_id:03d} raw sensor dark={dark_ratio:.3f}")
-        report["raw_hdr_checks"] = raw_hdr_checks
+        report["raw_sensor_checks"] = raw_sensor_checks
         report["display_witnesses"] = display_witnesses
         report["passed"] = not report["failures"]
         report.update(
@@ -2027,16 +1965,6 @@ def run_scan(args: argparse.Namespace) -> int:
     first_image = pattern_image(cv2, patterns[0])
     capture_config = load_capture_config(args)
     hdr = capture_config.hdr
-    if not hdr.enabled:
-        hdr = HdrConfig(
-            enabled=False,
-            output_bit_depth=hdr.output_bit_depth,
-            saturated_threshold=hdr.saturated_threshold,
-            dark_threshold=hdr.dark_threshold,
-            black_offset=hdr.black_offset,
-            selection_headroom_threshold=hdr.selection_headroom_threshold,
-            brackets=(ExposureBracket("single", int(args.exposure_us or 20000), float(args.gain_db or 0.0)),),
-        )
 
     configured_preflight_calibration = args.stage_precalibration or (
         aruco_prescan_dir(args.output.resolve()) / "stage_precalibration.json"
@@ -2109,8 +2037,8 @@ def run_scan(args: argparse.Namespace) -> int:
 
     angles = parse_csv_ints(args.angles, "angles")
     expected_pattern_ids = LEGACY_PATTERN_IDS if args.legacy_14_patterns else FULL_PATTERN_IDS
-    # A quality-gated scan is auditable only when every bracket and its selection
-    # masks are retained, even if the legacy Save All checkbox is off.
+    # A quality-gated scan is auditable only when every fixed-exposure frame is
+    # retained, even if the Save All checkbox is off.
     save_diagnostics = bool(args.save_all_images or capture_config.quality_gate.enabled)
     scan_rows: list[dict[str, Any]] = []
     final_pattern_rows: list[dict[str, Any]] = []
@@ -2125,15 +2053,12 @@ def run_scan(args: argparse.Namespace) -> int:
 
     print(
         f"[scan] scan_id={scan_id} scan_type={capture_config.rig.scan_type} "
-        f"patterns={len(patterns)} angles={angles} brackets={len(hdr.brackets)}",
+        f"patterns={len(patterns)} angles={angles} fixed_exposure={hdr.brackets[0].exposure_us}us",
         flush=True,
     )
     print(
-        "[scan] hdr brackets="
-        + ", ".join(
-            f"{bracket.name}:{bracket.exposure_us}us/{bracket.gain_db:g}dB"
-            for bracket in hdr.brackets
-        ),
+        f"[scan] fixed camera settings={hdr.brackets[0].exposure_us}us/"
+        f"{hdr.brackets[0].gain_db:g}dB for every structured-light pattern",
         flush=True,
     )
 
@@ -2235,8 +2160,6 @@ def run_scan(args: argparse.Namespace) -> int:
                                         exposure_us=bracket.exposure_us,
                                         gain_db=bracket.gain_db,
                                     )
-                                    if args.bracket_settle_ms > 0:
-                                        time.sleep(args.bracket_settle_ms / 1000.0)
                                 frame = camera.capture_frame()
                             else:
                                 synthetic = synthesize_frame(cv2, projected, bracket, hdr)
@@ -2557,7 +2480,6 @@ def run_scan(args: argparse.Namespace) -> int:
             "metadata": asdict(capture_config.rig),
             "settings": {
                 "settle_ms": effective_pattern_settle_ms(args),
-                "bracket_settle_ms": args.bracket_settle_ms,
                 "capture_timeout_ms": args.camera_timeout_ms,
                 "retries": args.retries,
                 "camera": camera_settings.as_dict() if camera_settings else None,
@@ -2870,7 +2792,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--pre-black-ms", default=300, type=int)
     parser.add_argument("--finish-black-ms", default=300, type=int)
-    parser.add_argument("--bracket-settle-ms", default=150, type=int)
     parser.add_argument("--retries", default=2, type=int)
     parser.add_argument("--retry-delay-ms", default=300, type=int)
     parser.add_argument("--angles", default="0")
@@ -2901,7 +2822,7 @@ def parse_args() -> argparse.Namespace:
         "--save-all-images",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Save raw exposure brackets and HDR masks in addition to final decoder images.",
+        help="Save fixed-exposure source frames and capture-quality diagnostics in addition to final decoder images.",
     )
 
     parser.add_argument("--camera-config", default=Path("camera_config.json"), type=Path)
@@ -2909,12 +2830,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-device-index", type=int)
     parser.add_argument("--exposure-us", type=int)
     parser.add_argument("--gain-db", type=float)
-    parser.add_argument("--short-exposure-us", type=int)
-    parser.add_argument("--short-gain-db", type=float)
-    parser.add_argument("--mid-exposure-us", type=int)
-    parser.add_argument("--mid-gain-db", type=float)
-    parser.add_argument("--long-exposure-us", type=int)
-    parser.add_argument("--long-gain-db", type=float)
     parser.add_argument("--fps", type=float)
     parser.add_argument(
         "--trigger-mode",

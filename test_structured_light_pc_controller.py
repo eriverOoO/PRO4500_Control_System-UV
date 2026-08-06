@@ -11,6 +11,7 @@ from structured_light_pc_controller import (
     aruco_marker_observations,
     assess_fpp_quality,
     merge_hdr_frames,
+    load_capture_config,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
 )
@@ -140,6 +141,37 @@ def test_quality_gate_measures_gray_and_sine_inside_projected_stage() -> None:
     assert report["gray_pairs"]["009_021"]["full_frame_contrast_valid_ratio"] == 0.36
     assert report["sine"]["valid_ratio"] == 1.0
     assert report["sine"]["full_frame_valid_ratio"] == 0.36
+
+
+def test_capture_config_uses_one_fixed_exposure(tmp_path) -> None:
+    config = tmp_path / "camera_config.json"
+    config.write_text(
+        '{"capture":{"single_exposure":{"exposure_us":15000,"gain_db":0.0}}}',
+        encoding="utf-8",
+    )
+    args = type(
+        "Args",
+        (),
+        {
+            "camera_config": config,
+            "exposure_us": None,
+            "gain_db": None,
+            "scan_type": None,
+            "focus_confirmed": None,
+            "scheimpflug_confirmed": None,
+            "keystone_predistortion": None,
+            "projector_tilt_deg": None,
+            "rig_id": None,
+            "calibration_id": None,
+            "projector_brightness": None,
+            "quality_gate": None,
+        },
+    )()
+
+    capture = load_capture_config(args)
+
+    assert capture.hdr.enabled is False
+    assert capture.hdr.brackets == (ExposureBracket("single", 15000, 0.0),)
 
 
 def test_aruco_marker_observations_save_corners_and_centers() -> None:
