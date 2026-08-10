@@ -1597,84 +1597,78 @@ def aruco_similarity_summary(source: Any, target: Any) -> tuple[float, float, li
 
 
 def run_aruco_precalibration(args: argparse.Namespace) -> int:
-    """Create the standard decoder-compatible fusion JSON from two verified prescans."""
+    """Register every cardinal stage view to the verified 0-degree view."""
     import numpy as np  # type: ignore
 
     cv2 = import_cv2()
     try:
         marker_ids = parse_aruco_ids(args.aruco_ids)
         output_root = args.output.resolve()
-        zero_path = existing_aruco_prescan_image_path(output_root, "zero")
-        rotated_path = existing_aruco_prescan_image_path(output_root, "rotated")
-        if not zero_path.exists() or not rotated_path.exists():
-            missing = [str(path) for path in (zero_path, rotated_path) if not path.exists()]
-            raise RuntimeError("Capture the missing ArUco prescan image(s) first: " + ", ".join(missing))
+        image_paths = {angle: existing_aruco_prescan_image_path(output_root, angle) for angle in CARDINAL_SCAN_ANGLES}
+        missing = [str(path) for path in image_paths.values() if not path.exists()]
+        if missing:
+            raise RuntimeError("Capture the missing 0/90/180/270 ArUco prescan image(s) first: " + ", ".join(missing))
+        zero_path = image_paths[0]
         zero = read_image(cv2, zero_path)
-        rotated = read_image(cv2, rotated_path)
         target_by_id, _target_selected = require_aruco_markers(
             cv2, zero, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
         )
-        source_by_id, _source_selected = require_aruco_markers(
-            cv2, rotated, dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
-        )
-        shared_by_candidate = [
-            candidate
-            for candidate in aruco_marker_candidates(marker_ids)
-            if all(marker_id in target_by_id and marker_id in source_by_id for marker_id in candidate)
-        ]
-        if not shared_by_candidate:
-            raise RuntimeError(
-                "The 0 and nominal-180 prescans do not share the same full marker set or opposite pair. "
-                "Recapture the view with the missing matching pair."
+        transforms_to_0: dict[str, dict[str, Any]] = {}
+        for angle in CARDINAL_SCAN_ANGLES[1:]:
+            source_path = image_paths[angle]
+            source_by_id, _source_selected = require_aruco_markers(
+                cv2, read_image(cv2, source_path), dictionary_name=args.aruco_dictionary, marker_ids=marker_ids
             )
-        selected_ids = shared_by_candidate[0]
-        source = np.asarray([point for marker_id in selected_ids for point in source_by_id[marker_id]], dtype=np.float32)
-        target = np.asarray([point for marker_id in selected_ids for point in target_by_id[marker_id]], dtype=np.float32)
-        matrix, inliers = cv2.findHomography(
-            source,
-            target,
-            method=cv2.RANSAC,
-            ransacReprojThreshold=float(args.aruco_ransac_threshold_px),
-        )
-        if matrix is None:
-            raise RuntimeError("Could not estimate ArUco homography. Recapture both prescan images")
-        stats = aruco_reprojection_stats(cv2, source, target, matrix, inliers)
-        angle_deg, scale, center = aruco_similarity_summary(source, target)
+            shared = next((candidate for candidate in aruco_marker_candidates(marker_ids)
+                           if all(marker_id in target_by_id and marker_id in source_by_id for marker_id in candidate)), None)
+            if shared is None:
+                raise RuntimeError(f"The 0 and {angle}-degree prescans do not share the same full marker set or opposite pair. Recapture the missing view.")
+            source = np.asarray([point for marker_id in shared for point in source_by_id[marker_id]], dtype=np.float32)
+            target = np.asarray([point for marker_id in shared for point in target_by_id[marker_id]], dtype=np.float32)
+            matrix, inliers = cv2.findHomography(source, target, method=cv2.RANSAC, ransacReprojThreshold=float(args.aruco_ransac_threshold_px))
+            if matrix is None:
+                raise RuntimeError(f"Could not estimate the {angle}-to-0 ArUco homography. Recapture both views")
+            stats = aruco_reprojection_stats(cv2, source, target, matrix, inliers)
+            angle_deg, scale, center = aruco_similarity_summary(source, target)
+            transforms_to_0[str(angle)] = {
+                "homography": np.asarray(matrix, dtype=float).tolist(),
+                "transform_direction": f"{angle}_to_0",
+                "source": {"role": f"stage-{angle}", "image": str(source_path)},
+                "target": {"role": "stage-0", "image": str(zero_path)},
+                "aruco": {"dictionary": args.aruco_dictionary, "requested_marker_ids": marker_ids, "marker_ids": shared,
+                          "method": "homography", "ransac_threshold_px": float(args.aruco_ransac_threshold_px), **stats,
+                          "rotation_source_to_target_deg": angle_deg, "similarity_scale": scale, "rotation_center_target_xy": center},
+                "stage_precalibration": {"intended_stage_angle_deg": angle, "source_to_target_rotation_deg": angle_deg,
+                                         "rotation_center_target_xy": center, "similarity_scale": scale,
+                                         "usage": f"Maps the nominal-{angle}-degree structured-light scan into the 0-degree scan."},
+            }
+        legacy_180 = transforms_to_0["180"]
         payload = {
-            "homography": np.asarray(matrix, dtype=float).tolist(),
-            "matrix": np.asarray(matrix, dtype=float).tolist(),
+            "schema": "four_direction_stage_cross_v1",
+            "reference_angle_deg": 0,
+            "registered_angles_deg": list(CARDINAL_SCAN_ANGLES),
+            "transforms_to_0": transforms_to_0,
+            "homography": legacy_180["homography"],
+            "matrix": legacy_180["homography"],
             "transform_kind": "homography",
             "transform_direction": "180_to_0",
-            "source": {"role": "stage-rotated", "image": str(rotated_path)},
+            "source": legacy_180["source"],
             "target": {"role": "stage-0", "image": str(zero_path)},
-            "aruco": {
-                "dictionary": args.aruco_dictionary,
-                "requested_marker_ids": marker_ids,
-                "marker_ids": selected_ids,
-                "method": "homography",
-                "ransac_threshold_px": float(args.aruco_ransac_threshold_px),
-                **stats,
-                "rotation_source_to_target_deg": angle_deg,
-                "deviation_from_180_deg": abs(abs(angle_deg) - float(args.aruco_intended_rotation_deg)),
-                "similarity_scale": scale,
-                "rotation_center_target_xy": center,
-            },
+            "aruco": legacy_180["aruco"],
             "stage_precalibration": {
                 "commanded_stage_value": float(args.aruco_stage_command_value),
                 "intended_rotation_deg": float(args.aruco_intended_rotation_deg),
-                "actual_rotation_magnitude_deg": abs(angle_deg),
-                "source_to_target_rotation_deg": angle_deg,
-                "rotation_center_target_xy": center,
-                "similarity_scale": scale,
-                "usage": "Maps the nominal-180-degree structured-light scan into the 0-degree scan.",
+                "actual_rotation_magnitude_deg": abs(float(legacy_180["aruco"]["rotation_source_to_target_deg"])),
+                **legacy_180["stage_precalibration"],
                 "transform_direction": "180_to_0",
             },
         }
         output_path = aruco_prescan_dir(output_root) / "stage_precalibration.json"
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(
-            f"[aruco] calibration ready selected_ids={selected_ids} actual_rotation={abs(angle_deg):.4f}deg "
-            f"rmse={stats['reprojection_rmse_px']:.3f}px saved={output_path}",
+            "[aruco] four-direction calibration ready " + ", ".join(
+                f"{angle}->0 rmse={item['aruco']['reprojection_rmse_px']:.3f}px" for angle, item in transforms_to_0.items()
+            ) + f" saved={output_path}",
             flush=True,
         )
         return 0

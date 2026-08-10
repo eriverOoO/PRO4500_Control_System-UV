@@ -336,9 +336,11 @@ configured markers when they are visible. If the camera crops two markers, it al
 accepts one visible opposite pair: configured order `0,1,2,3` means `(0,2)` or
 `(1,3)`; order `1,2,3,4` means `(1,3)` or `(2,4)`. A failed check leaves the
 last successful image intact and reports that the current view must be recaptured.
-The four prescans are copied to every scan's `aruco_prescan/` folder. The legacy
-**Legacy 180 Transform** button still makes a two-view transform for old data;
-it is not part of the four-direction workflow.
+After all four captures, click **Register 4 Views**. It calculates independent
+`90_to_0`, `180_to_0`, and `270_to_0` homographies and stores them together in
+`aruco_precalibration/stage_precalibration.json`. The former top-level 180°
+transform remains in that file only for backward compatibility. The four prescans
+and four-view registration are copied to every scan.
 
 The GUI and CLI default `--angles` to `0,90,180,270`. The controller writes a
 separate `scan_log.json` in each `angle_000`, `angle_090`, `angle_180`, and

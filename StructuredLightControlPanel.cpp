@@ -998,7 +998,7 @@ void build_ui(HWND hwnd) {
     g_app.arucoCapture90 = make_button(hwnd, IDC_ARUCO_CAPTURE_90, L"Capture 90", 142, y, 120, 28);
     g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture 180", 270, y, 120, 28);
     g_app.arucoCapture270 = make_button(hwnd, IDC_ARUCO_CAPTURE_270, L"Capture 270", 398, y, 120, 28);
-    g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Legacy 180 Transform", 526, y, 160, 28);
+    g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Register 4 Views", 526, y, 160, 28);
     make_label(hwnd, L"ArUco exposure us", 700, y + 4, 120, 22);
     g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 825, y, 100, 24);
 
@@ -1172,7 +1172,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             start_job(JobMode::ArucoCapture270, L"ArUco 270 prescan");
             return 0;
         case IDC_ARUCO_CALCULATE:
-            start_job(JobMode::ArucoCalculate, L"ArUco alignment calculation");
+            start_job(JobMode::ArucoCalculate, L"ArUco 4-view alignment calculation");
             return 0;
         case IDC_PROJECT_ONLY:
             start_job(JobMode::ProjectOnly, L"project only");
@@ -1241,10 +1241,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 L"ArUco verification or alignment failed. The previous valid prescan was kept. Check marker visibility, focus, and exposure, then recapture the failed 0, 90, 180, or 270 view.",
                 L"Recapture ArUco Prescan",
                 MB_ICONWARNING);
-        } else if (g_app.jobLabel == L"ArUco alignment calculation") {
+        } else if (g_app.jobLabel == L"ArUco 4-view alignment calculation") {
             MessageBoxW(
                 hwnd,
-                L"ArUco alignment is ready. This calibration will be copied into every later 22+22 scan until you calculate a new one.",
+                L"Four-view ArUco alignment is ready. The 90, 180, and 270 degree views are registered to 0 degrees and copied into every later 22+22 scan until you calculate a new one.",
                 L"ArUco Alignment Ready",
                 MB_ICONINFORMATION);
         }
