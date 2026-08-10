@@ -51,8 +51,8 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
 - `prepare_pc_python_env.ps1`: `.venv-pc` 생성 및 Python 패키지 설치.
 - `build.bat` / `PRO4500.cpp`: 기존의 간단한 PRO4500 투사/LED 유틸리티.
 - `GUI/`: 빌드에 사용되는 TI LightCrafter 4500 API와 HIDAPI 소스.
-- `generate_centered_patterns.ps1`: 원본 패턴의 세로 높이는 유지하고, 가로만
-  중앙 비율로 축소하며 나머지를 검정으로 채우는 생성 스크립트.
+- `generate_centered_patterns.ps1`: 세로 높이와 선택한 중앙 조사 폭은 유지하면서,
+  Gray/사인 패턴을 분해 가능한 주기로 다시 만들고 나머지를 검정으로 채우는 생성 스크립트.
 - `generated_patterns_centered/`: 화면 해상도와 세로 높이는 유지하고, 중앙의
   가로 영역에만 표시되는 로컬 생성 패턴 이미지. 이 폴더의 이미지는 Git에
   포함되지 않으며 각 PC에서 개별적으로 조절합니다.
@@ -74,6 +74,15 @@ GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 
 GUI를 시작하거나 `Patterns` 폴더를 변경하면 `00_White.bmp`의 실제 활성 영역을
 읽어 현재 가로 비율을 `Width (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
 이미지를 다시 확인해 표시값을 즉시 갱신합니다.
+
+Gray 코드와 4-step sine의 최소·기본 주기는 활성 조사 폭과 독립적인 `12 projector px`입니다.
+이전 생성기는 1280 px 원본의 5 px 주기까지 폭과 함께 축소했기 때문에, Width 30%에서는
+실제 주기가 약 1.5 px로 줄었습니다. 새 생성기는 Width 30%의 384 px 조사 영역 안에
+12 px 주기 약 32개를 배치합니다. 따라서 조사 면적은 바꾸지 않고 줄무늬만 넓어집니다.
+GUI에서 Width를 변경해도 12 px 주기는 유지되고 활성 폭에 들어가는 줄무늬 수만 바뀝니다.
+명령행에서는 `-StripePeriodPixels`로 12 px보다 넓게 바꿀 수 있지만, 주기를 변경한 뒤에는 기존
+reference phase와 높이 보정을 재사용하면 안 됩니다. 생성 조건은 같은 폴더의
+`pattern_profile.json`에 저장되고, 새 촬영의 `scan_log.json`에도 기록됩니다.
 
 Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따라서 새 PC에서
 처음 실행할 때는 `Width (%)` 기본값 `100`으로 `Apply Width`를 한 번 실행해 로컬

@@ -229,6 +229,17 @@ def image_files(pattern_dir: Path) -> list[Path]:
     return files
 
 
+def load_pattern_profile(pattern_dir: Path) -> dict[str, Any] | None:
+    """Load optional generator metadata used to keep calibration reproducible."""
+    profile_path = pattern_dir / "pattern_profile.json"
+    if not profile_path.is_file():
+        return None
+    payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Pattern profile must contain a JSON object: {profile_path}")
+    return payload
+
+
 def load_pattern_specs(pattern_dir: Path, *, legacy_14_patterns: bool) -> list[PatternSpec]:
     files_by_id: dict[int, Path] = {}
     for path in image_files(pattern_dir):
@@ -1961,6 +1972,7 @@ def run_scan(args: argparse.Namespace) -> int:
     cv2 = import_cv2()
     gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
     pattern_dir = args.patterns.resolve()
+    pattern_profile = load_pattern_profile(pattern_dir)
     patterns = load_pattern_specs(pattern_dir, legacy_14_patterns=args.legacy_14_patterns)
     first_image = pattern_image(cv2, patterns[0])
     capture_config = load_capture_config(args)
@@ -2465,6 +2477,7 @@ def run_scan(args: argparse.Namespace) -> int:
             "status": "aborted" if aborted else "ok",
             "scan_type": capture_config.rig.scan_type,
             "pattern_dir": str(pattern_dir),
+            "pattern_profile": pattern_profile,
             "pattern_contract": [
                 {"pattern_id": pattern_id, "label": label}
                 for pattern_id, label in PATTERN_CONTRACT
