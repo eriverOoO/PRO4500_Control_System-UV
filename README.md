@@ -319,31 +319,33 @@ captures/<scan_id>/
   메인 창에 표시합니다.
 ## Save Policy
 
-## ArUco prescan workflow for nominal 180-degree fusion
+## ArUco prescan workflow for 0/90/180/270-degree fusion
 
 In the native `StructuredLightControlPanel.exe`, use the **ArUco prescan** controls
-before every 22 + 22 pattern scan:
+before every four-direction 22-pattern scan:
 
-1. Turn the stage to 0 and click **Capture ArUco 0**.
-2. Send the stage's fixed program command value `250` (this is **not** an angle;
-   it is intended to produce a physical 180-degree rotation), then click
-   **Capture ArUco rotated**.
-3. Click **Calculate Alignment**.
+1. Turn the stage to 0, 90, 180, and 270 degrees in turn.
+2. At every stop, turn the Blue LED off and click the matching **Capture 0**,
+   **Capture 90**, **Capture 180**, or **Capture 270** button.
+3. Confirm that `aruco_precalibration` now contains
+   `prescan_0.png`, `prescan_90.png`, `prescan_180.png`, and
+   `prescan_270.png`, with matching `*_capture.json` files.
 
-Both captures are made with the Blue LED forced to 0. The controller uses all four
+All prescans are made with the Blue LED forced to 0. The controller uses all four
 configured markers when they are visible. If the camera crops two markers, it also
 accepts one visible opposite pair: configured order `0,1,2,3` means `(0,2)` or
-`(1,3)`; order `1,2,3,4` means `(1,3)` or `(2,4)`. The same pair must be visible
-in both prescan images. A failed check leaves the last successful image and
-calibration untouched and reports that the current view must be recaptured. A
-successful calculation writes
-`captures/aruco_precalibration/stage_precalibration.json`.
+`(1,3)`; order `1,2,3,4` means `(1,3)` or `(2,4)`. A failed check leaves the
+last successful image intact and reports that the current view must be recaptured.
+The four prescans are copied to every scan's `aruco_prescan/` folder. The legacy
+**Legacy 180 Transform** button still makes a two-view transform for old data;
+it is not part of the four-direction workflow.
 
-The main 22 + 22 scan is blocked until this JSON exists. Each main scan copies it
-to `<scan_id>/stage_precalibration.json` and records it in `scan_log.json`; pass
-that JSON to the Non-planar_calc decoder as `--fusion-transform`. The latest valid
-calibration remains active for later scans until a new pair is captured and
-calculated.
+The GUI and CLI default `--angles` to `0,90,180,270`. The controller writes a
+separate `scan_log.json` in each `angle_000`, `angle_090`, `angle_180`, and
+`angle_270` folder, including the commanded angle and the optional measured angle.
+Enter real encoder measurements in **Measured angles** when available; leaving it
+blank intentionally does not claim a measured stage position. Non-planar_calc
+uses the four prescans for stage-cross registration and performs the final fusion.
 
 The native control panel includes a `Save All` option.
 
@@ -357,7 +359,7 @@ images.
 CLI equivalent:
 
 ```powershell
-.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --dry-run --save-all-images --patterns .\generated_patterns_centered --output .\captures --scan-type reference --angles 0,90,180,270
 ```
 
 ## Attribution

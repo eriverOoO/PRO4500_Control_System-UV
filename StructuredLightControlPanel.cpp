@@ -72,8 +72,11 @@ enum ControlId {
     IDC_LED_OFF,
     IDC_ARUCO_CAPTURE_ZERO,
     IDC_ARUCO_CAPTURE_ROTATED,
+    IDC_ARUCO_CAPTURE_90,
+    IDC_ARUCO_CAPTURE_270,
     IDC_ARUCO_CALCULATE,
     IDC_ARUCO_EXPOSURE,
+    IDC_STAGE_ACTUAL_ANGLES,
 };
 
 enum class JobMode {
@@ -85,6 +88,8 @@ enum class JobMode {
     ContinuousCapture,
     ArucoCaptureZero,
     ArucoCaptureRotated,
+    ArucoCapture90,
+    ArucoCapture270,
     ArucoCalculate,
 };
 
@@ -129,8 +134,11 @@ struct AppState {
     HWND ledOff{};
     HWND arucoCaptureZero{};
     HWND arucoCaptureRotated{};
+    HWND arucoCapture90{};
+    HWND arucoCapture270{};
     HWND arucoCalculate{};
     HWND arucoExposure{};
+    HWND stageActualAngles{};
     PROCESS_INFORMATION jobProcess{};
     PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
@@ -557,6 +565,7 @@ std::wstring build_controller_command(JobMode mode) {
     append_optional_arg(cmd, L"--fps", g_app.fps);
     append_optional_arg(cmd, L"--trigger-mode", g_app.trigger);
     append_optional_arg(cmd, L"--image-format", g_app.imageFormat);
+    append_optional_arg(cmd, L"--stage-actual-angles", g_app.stageActualAngles);
     if (mode != JobMode::ProjectOnly) {
         cmd << L" --gui-preview-file " << quote(gui_preview_file())
             << L" --gui-preview-max-width 360";
@@ -579,10 +588,16 @@ std::wstring build_controller_command(JobMode mode) {
     } else if (mode == JobMode::ContinuousCapture) {
         cmd << L" --continuous-capture " << quote(L"0");
     } else if (mode == JobMode::ArucoCaptureZero) {
-        cmd << L" --aruco-prescan-capture --aruco-prescan-role zero";
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role 0";
         append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     } else if (mode == JobMode::ArucoCaptureRotated) {
-        cmd << L" --aruco-prescan-capture --aruco-prescan-role rotated";
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role 180";
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
+    } else if (mode == JobMode::ArucoCapture90) {
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role 90";
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
+    } else if (mode == JobMode::ArucoCapture270) {
+        cmd << L" --aruco-prescan-capture --aruco-prescan-role 270";
         append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     } else if (mode == JobMode::ArucoCalculate) {
         cmd << L" --aruco-precalibration"
@@ -601,6 +616,8 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.continuousCapture, !running);
     EnableWindow(g_app.arucoCaptureZero, !running);
     EnableWindow(g_app.arucoCaptureRotated, !running);
+    EnableWindow(g_app.arucoCapture90, !running);
+    EnableWindow(g_app.arucoCapture270, !running);
     EnableWindow(g_app.arucoCalculate, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
@@ -777,20 +794,9 @@ void start_job(JobMode mode, const std::wstring& label) {
         MessageBoxW(g_app.window, L"Pattern folder does not exist.", L"Missing Patterns", MB_ICONERROR);
         return;
     }
-    if (mode == JobMode::Scan) {
-        const std::wstring calibration = path_join(
-            path_join(get_text(g_app.output), L"aruco_precalibration"),
-            L"stage_precalibration.json");
-        if (!file_exists(calibration)) {
-            MessageBoxW(
-                g_app.window,
-                L"ArUco precalibration is not ready. Capture verified 0 and nominal-180 images, then click Calculate Alignment before the 22+22 main scan.",
-                L"ArUco Precalibration Required",
-                MB_ICONWARNING);
-            return;
-        }
-    }
-    if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated || mode == JobMode::ArucoCalculate) {
+    if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated
+        || mode == JobMode::ArucoCapture90 || mode == JobMode::ArucoCapture270
+        || mode == JobMode::ArucoCalculate) {
         apply_led_value(0);
         append_log(g_app.log, L"\r\n[aruco] Blue LED set to 0 for no-pattern prescan.\r\n");
     }
@@ -985,15 +991,16 @@ void build_ui(HWND hwnd) {
 
     y += 42;
     make_label(hwnd, L"ArUco prescan", margin, y + 4, 90, 22);
-    make_label(hwnd, L"1) stage 0 > Capture 0   2) stage command 250 (nominal 180 deg)", 110, y + 4, 460, 22);
-    make_label(hwnd, L"> Capture rotated > Calculate Alignment", 585, y + 4, 275, 22);
+    make_label(hwnd, L"At each 0 / 90 / 180 / 270 stage stop, turn off the LED and capture one verified no-pattern image.", 110, y + 4, 760, 22);
 
     y += 32;
-    g_app.arucoCaptureZero = make_button(hwnd, IDC_ARUCO_CAPTURE_ZERO, L"Capture ArUco 0", margin, y, 145, 28);
-    g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture ArUco rotated", 170, y, 175, 28);
-    g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Calculate Alignment", 360, y, 160, 28);
-    make_label(hwnd, L"ArUco exposure us", 545, y + 4, 120, 22);
-    g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 670, y, 100, 24);
+    g_app.arucoCaptureZero = make_button(hwnd, IDC_ARUCO_CAPTURE_ZERO, L"Capture 0", margin, y, 120, 28);
+    g_app.arucoCapture90 = make_button(hwnd, IDC_ARUCO_CAPTURE_90, L"Capture 90", 142, y, 120, 28);
+    g_app.arucoCaptureRotated = make_button(hwnd, IDC_ARUCO_CAPTURE_ROTATED, L"Capture 180", 270, y, 120, 28);
+    g_app.arucoCapture270 = make_button(hwnd, IDC_ARUCO_CAPTURE_270, L"Capture 270", 398, y, 120, 28);
+    g_app.arucoCalculate = make_button(hwnd, IDC_ARUCO_CALCULATE, L"Legacy 180 Transform", 526, y, 160, 28);
+    make_label(hwnd, L"ArUco exposure us", 700, y + 4, 120, 22);
+    g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 825, y, 100, 24);
 
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
@@ -1066,9 +1073,14 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Monitor", 185, y + 4, 60, 22);
     g_app.monitor = make_edit(hwnd, IDC_MONITOR, L"1", 250, y, 60, 24);
     make_label(hwnd, L"Angles", 340, y + 4, 55, 22);
-    g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0", 395, y, 145, 24);
+    g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0,90,180,270", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
     g_app.settle = make_edit(hwnd, IDC_SETTLE, L"1000", 655, y, 80, 24);
+
+    y += 32;
+    make_label(hwnd, L"Measured angles", margin, y + 4, 105, 22);
+    g_app.stageActualAngles = make_edit(hwnd, IDC_STAGE_ACTUAL_ANGLES, L"", 120, y, 300, 24);
+    make_label(hwnd, L"Optional: measured degrees in the same order as Angles; leave empty if not measured.", 435, y + 4, 470, 22);
 
     y += 34;
     g_app.windowed = make_checkbox(hwnd, IDC_WINDOWED, L"Windowed projection", margin, y, 170, 24, false);
@@ -1151,7 +1163,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             start_job(JobMode::ArucoCaptureZero, L"ArUco 0 prescan");
             return 0;
         case IDC_ARUCO_CAPTURE_ROTATED:
-            start_job(JobMode::ArucoCaptureRotated, L"ArUco nominal-180 prescan");
+            start_job(JobMode::ArucoCaptureRotated, L"ArUco 180 prescan");
+            return 0;
+        case IDC_ARUCO_CAPTURE_90:
+            start_job(JobMode::ArucoCapture90, L"ArUco 90 prescan");
+            return 0;
+        case IDC_ARUCO_CAPTURE_270:
+            start_job(JobMode::ArucoCapture270, L"ArUco 270 prescan");
             return 0;
         case IDC_ARUCO_CALCULATE:
             start_job(JobMode::ArucoCalculate, L"ArUco alignment calculation");
@@ -1220,7 +1238,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         if (isArucoJob && exitCode != 0) {
             MessageBoxW(
                 hwnd,
-                L"ArUco verification or alignment failed. The previous valid calibration was kept. Check marker visibility, focus, and exposure, then recapture the failed 0 or nominal-180 view.",
+                L"ArUco verification or alignment failed. The previous valid prescan was kept. Check marker visibility, focus, and exposure, then recapture the failed 0, 90, 180, or 270 view.",
                 L"Recapture ArUco Prescan",
                 MB_ICONWARNING);
         } else if (g_app.jobLabel == L"ArUco alignment calculation") {
@@ -1336,7 +1354,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         0, kAppClass, L"PRO4500 XIMEA UV Scan Controller",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 800,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 840,
         nullptr, nullptr, instance, nullptr);
 
     if (!hwnd) return 1;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from structured_light_pc_controller import (
     ExposureBracket,
@@ -9,8 +10,12 @@ from structured_light_pc_controller import (
     QualityGateConfig,
     aruco_stage_geometry,
     aruco_marker_observations,
+    aruco_prescan_image_path,
     assess_fpp_quality,
+    copy_aruco_prescan_artifacts,
     merge_hdr_frames,
+    normalize_aruco_prescan_angle,
+    parse_stage_actual_angles,
     load_capture_config,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
@@ -198,3 +203,40 @@ def test_aruco_stage_geometry_uses_configured_stage_cross_coordinates(tmp_path) 
     assert geometry["marker_centers_mm"] == {
         "0": [0.0, -42.0], "1": [42.0, 0.0], "2": [0.0, 42.0], "3": [-42.0, 0.0]
     }
+
+
+def test_cardinal_aruco_prescans_copy_with_angle_specific_names(tmp_path) -> None:
+    source = tmp_path / "captures"
+    prescan = source / "aruco_precalibration"
+    prescan.mkdir(parents=True)
+    for angle in (0, 90, 180, 270):
+        image = aruco_prescan_image_path(source, angle)
+        image.write_bytes(b"prescan")
+        image.with_name(image.stem + "_capture.json").write_text(
+            '{"selected_marker_ids":[0,2],"marker_observations":{"0":{},"2":{}}}',
+            encoding="utf-8",
+        )
+
+    result = copy_aruco_prescan_artifacts(source, source / "scan")
+
+    assert result["spatial_calibration"]["status"] == "ready"
+    assert (source / "scan" / "aruco_prescan" / "prescan_90.png").is_file()
+    assert (source / "scan" / "aruco_prescan" / "prescan_270_capture.json").is_file()
+
+
+def test_stage_actual_angles_are_optional_but_must_match_capture_order() -> None:
+    assert parse_stage_actual_angles(None, [0, 90, 180, 270]) == {}
+    assert parse_stage_actual_angles("0.1,90.2,180.3,270.4", [0, 90, 180, 270]) == {
+        0: 0.1,
+        90: 90.2,
+        180: 180.3,
+        270: 270.4,
+    }
+    with pytest.raises(ValueError, match="one finite measured angle"):
+        parse_stage_actual_angles("0,90", [0, 90, 180, 270])
+
+
+def test_aruco_prescan_role_accepts_cardinal_and_legacy_names() -> None:
+    assert normalize_aruco_prescan_angle("90") == 90
+    assert normalize_aruco_prescan_angle("zero") == 0
+    assert normalize_aruco_prescan_angle("rotated") == 180

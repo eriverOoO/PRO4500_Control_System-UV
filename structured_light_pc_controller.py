@@ -94,6 +94,7 @@ DEFAULT_CAPTURE_ORDER = (
     12,
     13,
 )
+CARDINAL_SCAN_ANGLES = (0, 90, 180, 270)
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,18 @@ def parse_csv_ints(value: str, label: str) -> list[int]:
     if not items:
         raise argparse.ArgumentTypeError(f"{label} cannot be empty")
     return items
+
+
+def parse_stage_actual_angles(value: str | None, angles: list[int]) -> dict[int, float]:
+    """Parse optional, operator-measured stage angles in capture order."""
+    if value is None or not value.strip():
+        return {}
+    values = [float(item.strip()) for item in value.split(",") if item.strip()]
+    if len(values) != len(angles) or not all(math.isfinite(item) for item in values):
+        raise ValueError(
+            "--stage-actual-angles must contain one finite measured angle for every --angles entry"
+        )
+    return {int(angle) % 360: measured for angle, measured in zip(angles, values)}
 
 
 def safe_scan_id(value: str) -> str:
@@ -863,6 +876,8 @@ def append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "angle_deg",
         "pattern_id",
         "label",
+        "sequence_index",
+        "trigger_id",
         "capture_id",
         "attempt",
         "bracket_name",
@@ -886,6 +901,49 @@ def append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
+
+
+def write_angle_capture_logs(
+    *,
+    scan_dir: Path,
+    scan_id: str,
+    status: str,
+    scan_type: str,
+    patterns: list[PatternSpec],
+    angles: list[int],
+    stages: dict[str, dict[str, Any]],
+    final_patterns: list[dict[str, Any]],
+    settings: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    """Write decoder-ready evidence beside every cardinal angle folder."""
+    if len(angles) <= 1:
+        return
+    pattern_contract = [
+        {"pattern_id": spec.pattern_id, "label": spec.label}
+        for spec in patterns
+    ]
+    for angle in angles:
+        angle_dir = scan_dir / f"angle_{angle:03d}"
+        if not angle_dir.is_dir():
+            continue
+        entries = [entry for entry in final_patterns if entry.get("angle_deg") == angle]
+        payload = {
+            "scan_id": scan_id,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "status": status,
+            "scan_type": scan_type,
+            "angles_deg": [angle],
+            "stage": stages.get(str(angle), {}),
+            "pattern_order": pattern_contract,
+            "patterns": entries,
+            "settings": settings,
+            "metadata": metadata,
+        }
+        (angle_dir / "scan_log.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
 def capture_filename(
@@ -1282,11 +1340,41 @@ def aruco_prescan_dir(output_root: Path) -> Path:
     return output_root / "aruco_precalibration"
 
 
-def aruco_prescan_image_path(output_root: Path, role: str) -> Path:
-    if role not in {"zero", "rotated"}:
-        raise ValueError("ArUco prescan role must be zero or rotated")
-    name = "prescan_0.png" if role == "zero" else "prescan_nominal_180.png"
-    return aruco_prescan_dir(output_root) / name
+def normalize_aruco_prescan_angle(role: str | int) -> int:
+    aliases = {"zero": 0, "rotated": 180}
+    text = str(role).strip().lower()
+    angle = aliases.get(text)
+    if angle is None:
+        try:
+            angle = int(text) % 360
+        except ValueError as exc:
+            raise ValueError("ArUco prescan role must be 0, 90, 180, or 270") from exc
+    if angle not in CARDINAL_SCAN_ANGLES:
+        raise ValueError("ArUco prescan role must be 0, 90, 180, or 270")
+    return angle
+
+
+def aruco_prescan_image_path(output_root: Path, role: str | int) -> Path:
+    angle = normalize_aruco_prescan_angle(role)
+    return aruco_prescan_dir(output_root) / f"prescan_{angle}.png"
+
+
+def aruco_prescan_metadata_path(output_root: Path, role: str | int) -> Path:
+    return aruco_prescan_image_path(output_root, role).with_name(
+        aruco_prescan_image_path(output_root, role).stem + "_capture.json"
+    )
+
+
+def existing_aruco_prescan_image_path(output_root: Path, role: str | int) -> Path:
+    """Find a canonical prescan, accepting the former nominal-180 filename."""
+    canonical = aruco_prescan_image_path(output_root, role)
+    if canonical.exists():
+        return canonical
+    if normalize_aruco_prescan_angle(role) == 180:
+        legacy = aruco_prescan_dir(output_root) / "prescan_nominal_180.png"
+        if legacy.exists():
+            return legacy
+    return canonical
 
 
 def aruco_stage_geometry(args: argparse.Namespace, marker_ids: list[int]) -> dict[str, Any]:
@@ -1336,37 +1424,52 @@ def copy_aruco_prescan_artifacts(output_root: Path, scan_dir: Path) -> dict[str,
     """Keep per-scan ArUco evidence with calibration scans instead of a mutable global copy."""
     source_dir = aruco_prescan_dir(output_root)
     destination_dir = scan_dir / "aruco_prescan"
-    filenames = (
-        "prescan_0.png",
-        "prescan_nominal_180.png",
-        "zero_capture.json",
-        "rotated_capture.json",
-    )
     copied: list[str] = []
     missing: list[str] = []
-    for filename in filenames:
-        source = source_dir / filename
-        if not source.exists():
-            missing.append(filename)
-            continue
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination_dir / filename)
-        copied.append(filename)
+    copied_images: set[int] = set()
+    metadata_by_angle: dict[int, dict[str, Any]] = {}
+    for angle in CARDINAL_SCAN_ANGLES:
+        image_name = f"prescan_{angle}.png"
+        image_candidates = [source_dir / image_name]
+        metadata_candidates = [source_dir / f"prescan_{angle}_capture.json"]
+        if angle == 180:
+            image_candidates.append(source_dir / "prescan_nominal_180.png")
+            metadata_candidates.append(source_dir / "rotated_capture.json")
+        elif angle == 0:
+            metadata_candidates.append(source_dir / "zero_capture.json")
+        image_source = next((path for path in image_candidates if path.is_file()), None)
+        metadata_source = next((path for path in metadata_candidates if path.is_file()), None)
+        if image_source is None:
+            missing.append(image_name)
+        else:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(image_source, destination_dir / image_name)
+            copied.append(image_name)
+            copied_images.add(angle)
+        if metadata_source is None:
+            missing.append(f"prescan_{angle}_capture.json")
+        else:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            destination_name = f"prescan_{angle}_capture.json"
+            shutil.copy2(metadata_source, destination_dir / destination_name)
+            copied.append(destination_name)
+            metadata_by_angle[angle] = read_json_file(metadata_source)
     observations: dict[str, Any] = {}
-    required_ids: set[str] = set()
-    for role, filename in (("zero", "zero_capture.json"), ("rotated", "rotated_capture.json")):
-        metadata = read_json_file(source_dir / filename)
-        if not metadata:
-            continue
+    selected_ids_by_angle: dict[str, list[int]] = {}
+    for angle, metadata in metadata_by_angle.items():
         marker_data = metadata.get("marker_observations", {})
-        requested = metadata.get("requested_marker_ids", [])
         if isinstance(marker_data, dict):
-            observations[role] = sorted(marker_data)
-        if isinstance(requested, list):
-            required_ids.update(str(marker_id) for marker_id in requested)
-    full_marker_coverage = bool(required_ids) and all(
-        required_ids.issubset(set(observations.get(role, [])))
-        for role in ("zero", "rotated")
+            observations[str(angle)] = sorted(marker_data)
+        selected = metadata.get("selected_marker_ids", [])
+        if isinstance(selected, list):
+            selected_ids_by_angle[str(angle)] = [int(marker_id) for marker_id in selected]
+    all_cardinal_prescans = all(
+        angle in copied_images and angle in metadata_by_angle
+        for angle in CARDINAL_SCAN_ANGLES
+    )
+    usable_stage_cross = all(
+        len(selected_ids_by_angle.get(str(angle), [])) >= 2
+        for angle in CARDINAL_SCAN_ANGLES
     )
     return {
         "status": "copied" if copied else "not_found",
@@ -1375,10 +1478,11 @@ def copy_aruco_prescan_artifacts(output_root: Path, scan_dir: Path) -> dict[str,
         "copied_files": copied,
         "missing_files": missing,
         "spatial_calibration": {
-            "required_marker_ids": sorted(required_ids),
-            "detected_marker_ids_by_role": observations,
-            "full_marker_coverage": full_marker_coverage,
-            "status": "ready" if full_marker_coverage else "insufficient_markers",
+            "required_angles_deg": list(CARDINAL_SCAN_ANGLES),
+            "detected_marker_ids_by_angle": observations,
+            "selected_marker_ids_by_angle": selected_ids_by_angle,
+            "all_cardinal_prescans": all_cardinal_prescans,
+            "status": "ready" if all_cardinal_prescans and usable_stage_cross else "incomplete",
         },
     }
 
@@ -1409,11 +1513,13 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             dictionary_name=args.aruco_dictionary,
             marker_ids=marker_ids,
         )
-        output_path = aruco_prescan_image_path(args.output.resolve(), args.aruco_prescan_role)
+        angle = normalize_aruco_prescan_angle(args.aruco_prescan_role)
+        output_path = aruco_prescan_image_path(args.output.resolve(), angle)
         size_bytes = save_camera_frame(cv2, frame, output_path)
         metadata = {
             "created_at": datetime.now().isoformat(timespec="seconds"),
-            "role": args.aruco_prescan_role,
+            "role": str(angle),
+            "angle_deg": angle,
             "filename": output_path.name,
             "size_bytes": size_bytes,
             "dictionary": args.aruco_dictionary,
@@ -1427,11 +1533,11 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
             "camera_timestamp_ms": frame.timestamp_ms,
             "camera_frame_index": frame.frame_index,
         }
-        (output_path.parent / f"{args.aruco_prescan_role}_capture.json").write_text(
+        aruco_prescan_metadata_path(args.output.resolve(), angle).write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         print(
-            f"[aruco] verified role={args.aruco_prescan_role} selected_ids={selected_ids} saved={output_path}",
+            f"[aruco] verified angle={angle:03d} selected_ids={selected_ids} saved={output_path}",
             flush=True,
         )
         return 0
@@ -1498,8 +1604,8 @@ def run_aruco_precalibration(args: argparse.Namespace) -> int:
     try:
         marker_ids = parse_aruco_ids(args.aruco_ids)
         output_root = args.output.resolve()
-        zero_path = aruco_prescan_image_path(output_root, "zero")
-        rotated_path = aruco_prescan_image_path(output_root, "rotated")
+        zero_path = existing_aruco_prescan_image_path(output_root, "zero")
+        rotated_path = existing_aruco_prescan_image_path(output_root, "rotated")
         if not zero_path.exists() or not rotated_path.exists():
             missing = [str(path) for path in (zero_path, rotated_path) if not path.exists()]
             raise RuntimeError("Capture the missing ArUco prescan image(s) first: " + ", ".join(missing))
@@ -1589,7 +1695,7 @@ def verify_aruco_prescan_stability(args: argparse.Namespace) -> dict[str, Any]:
     if not parse_bool(limits.get("enabled") if isinstance(limits, dict) else None, True):
         return {"status": "skipped", "reason": "disabled"}
     cv2 = import_cv2()
-    zero_path = aruco_prescan_image_path(args.output.resolve(), "zero")
+    zero_path = existing_aruco_prescan_image_path(args.output.resolve(), "zero")
     if not zero_path.exists():
         raise RuntimeError("ArUco stability check requires the verified 0-degree prescan")
     zero = read_image(cv2, zero_path)
@@ -2012,8 +2118,8 @@ def run_scan(args: argparse.Namespace) -> int:
         )
         if aruco_prescan_artifacts["spatial_calibration"]["status"] != "ready":
             print(
-                "[aruco] WARNING: spatial height calibration needs all requested ArUco IDs "
-                "in both zero and rotated prescans; this scan remains usable for 0/180 alignment.",
+                "[aruco] WARNING: four-direction stage-cross registration needs usable prescans "
+                "at 0/90/180/270 degrees; inspect the copied artifact report before metric fusion.",
                 flush=True,
             )
     configured_precalibration = args.stage_precalibration or (
@@ -2031,11 +2137,18 @@ def run_scan(args: argparse.Namespace) -> int:
     else:
         print(
             "[aruco] WARNING: no persisted precalibration JSON was found; "
-            "capture and calculate the 0/nominal-180 ArUco prescan before decoding this scan.",
+            "capture the 0/90/180/270 ArUco prescans before four-direction decoding this scan.",
             flush=True,
         )
 
     angles = parse_csv_ints(args.angles, "angles")
+    if len(set(angles)) != len(angles):
+        raise ValueError("--angles must not contain duplicate stage angles")
+    try:
+        actual_stage_angles = parse_stage_actual_angles(args.stage_actual_angles, angles)
+    except ValueError as exc:
+        print(f"[scan] ERROR: {exc}", flush=True)
+        return 1
     expected_pattern_ids = LEGACY_PATTERN_IDS if args.legacy_14_patterns else FULL_PATTERN_IDS
     # A quality-gated scan is auditable only when every fixed-exposure frame is
     # retained, even if the Save All checkbox is off.
@@ -2045,6 +2158,7 @@ def run_scan(args: argparse.Namespace) -> int:
     hdr_reports: list[dict[str, Any]] = []
     final_quality_reports: dict[str, Any] = {}
     main_scan_marker_visibility: dict[str, Any] = {}
+    stage_by_angle: dict[str, dict[str, Any]] = {}
     display: PatternDisplay | None = None
     camera: CameraInterface | None = None
     camera_settings: CameraSettings | None = None
@@ -2107,11 +2221,19 @@ def run_scan(args: argparse.Namespace) -> int:
                 elif not args.no_angle_prompt:
                     input(f"Set rotation stage to {angle} degrees, then press Enter...")
 
+            stage_by_angle[str(angle)] = {
+                "commanded_angle_deg": int(angle) % 360,
+                "actual_angle_deg": actual_stage_angles.get(int(angle) % 360),
+                "settled": True,
+                "position_id": f"deg_{int(angle) % 360}",
+                "operator_confirmation": "angle advance acknowledged before the pattern burst",
+            }
+
             angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
             angle_dir.mkdir(parents=True, exist_ok=True)
             angle_hdr_captures: list[dict[str, Any]] = []
 
-            for spec in patterns:
+            for sequence_index, spec in enumerate(patterns):
                 projected = pattern_image(cv2, spec)
                 if display is not None:
                     display.show(cv2, projected)
@@ -2143,6 +2265,8 @@ def run_scan(args: argparse.Namespace) -> int:
                             "angle_deg": angle,
                             "pattern_id": spec.pattern_id,
                             "label": spec.label,
+                            "sequence_index": sequence_index,
+                            "trigger_id": f"{scan_id}-deg{angle:03d}-seq{sequence_index:03d}",
                             "capture_id": capture_id,
                             "attempt": attempt,
                             "bracket_name": bracket.name,
@@ -2295,6 +2419,8 @@ def run_scan(args: argparse.Namespace) -> int:
                     "label": spec.label,
                     "filename": final_filename,
                     "angle_deg": angle,
+                    "sequence_index": sequence_index,
+                    "trigger_id": f"{scan_id}-deg{angle:03d}-seq{sequence_index:03d}",
                     "source_pattern_filename": spec.source_path.name,
                     "source_inverted": spec.invert_source,
                     "brackets": bracket_entries,
@@ -2475,6 +2601,7 @@ def run_scan(args: argparse.Namespace) -> int:
                 for spec in patterns
             ],
             "angles_deg": angles,
+            "stage_by_angle": stage_by_angle,
             "stage_precalibration": stage_precalibration,
             "aruco_prescan_artifacts": aruco_prescan_artifacts,
             "metadata": asdict(capture_config.rig),
@@ -2500,6 +2627,24 @@ def run_scan(args: argparse.Namespace) -> int:
             "hdr_merge_report": hdr_reports,
             "rows": scan_rows,
         }
+        angle_settings = {
+            "camera": camera_settings.as_dict() if camera_settings else None,
+            "settle_ms": effective_pattern_settle_ms(args),
+            "synthetic_capture": bool(args.dry_run or args.no_camera),
+            "legacy_14_patterns": args.legacy_14_patterns,
+        }
+        write_angle_capture_logs(
+            scan_dir=scan_dir,
+            scan_id=scan_id,
+            status=log["status"],
+            scan_type=capture_config.rig.scan_type,
+            patterns=patterns,
+            angles=angles,
+            stages=stage_by_angle,
+            final_patterns=final_pattern_rows,
+            settings=angle_settings,
+            metadata=asdict(capture_config.rig),
+        )
         (scan_dir / "scan_log.json").write_text(
             json.dumps(log, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -2794,7 +2939,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--finish-black-ms", default=300, type=int)
     parser.add_argument("--retries", default=2, type=int)
     parser.add_argument("--retry-delay-ms", default=300, type=int)
-    parser.add_argument("--angles", default="0")
+    parser.add_argument(
+        "--angles",
+        default="0,90,180,270",
+        help="Comma-separated cardinal stage angles; the production default is 0,90,180,270.",
+    )
+    parser.add_argument(
+        "--stage-actual-angles",
+        help=(
+            "Optional comma-separated measured stage angles in the same order as --angles. "
+            "Record real measurements; do not use nominal values as a substitute."
+        ),
+    )
     parser.add_argument("--pause-before-first-angle", action="store_true")
     parser.add_argument("--no-angle-prompt", action="store_true")
     parser.add_argument("--angle-advance-file", type=Path)
@@ -2863,7 +3019,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continuous-capture", nargs="?", const=0, type=int)
     parser.add_argument("--check-camera", action="store_true")
     parser.add_argument("--aruco-prescan-capture", action="store_true")
-    parser.add_argument("--aruco-prescan-role", choices=("zero", "rotated"))
+    parser.add_argument(
+        "--aruco-prescan-role",
+        choices=("0", "90", "180", "270", "zero", "rotated"),
+        help="No-pattern ArUco prescan angle; zero/rotated are legacy aliases for 0/180.",
+    )
     parser.add_argument(
         "--aruco-exposure-us",
         type=int,
@@ -2892,7 +3052,7 @@ def main() -> int:
         return run_check_camera(args)
     if args.aruco_prescan_capture:
         if args.aruco_prescan_role is None:
-            raise SystemExit("--aruco-prescan-capture requires --aruco-prescan-role zero or rotated")
+            raise SystemExit("--aruco-prescan-capture requires --aruco-prescan-role 0, 90, 180, or 270")
         return run_aruco_prescan_capture(args)
     if args.aruco_precalibration:
         return run_aruco_precalibration(args)
