@@ -26,6 +26,8 @@ def test_setup_creates_fixed_exposure_x_and_y_pattern_sets(tmp_path) -> None:
     manifest = json.loads((session / "session_manifest.json").read_text(encoding="utf-8"))
     assert manifest["capture"]["frames_per_pose"] == 44
     assert manifest["capture"]["fixed_camera_settings"]["exposure_us"] == 15000
+    assert manifest["capture"]["visible_reference"]["required"] is True
+    assert manifest["capture"]["visible_reference"]["projector_uv"] == "off"
     assert manifest["checkerboard"]["inner_corners"] == [9, 9]
     assert len(list((session / "patterns_x").glob("*.bmp"))) == 22
     assert len(list((session / "patterns_y").glob("*.bmp"))) == 22

@@ -26,7 +26,8 @@ enum ControlId {
     IDC_SESSION,
     IDC_POSE,
     IDC_PREPARE,
-    IDC_CAPTURE,
+    IDC_CAPTURE_VISIBLE,
+    IDC_CAPTURE_UV,
     IDC_STOP,
     IDC_OPEN,
     IDC_LOG,
@@ -39,7 +40,8 @@ struct AppState {
     HWND session{};
     HWND pose{};
     HWND prepare{};
-    HWND capture{};
+    HWND captureVisible{};
+    HWND captureUv{};
     HWND stop{};
     HWND open{};
     HWND log{};
@@ -102,7 +104,8 @@ void set_running(bool running, const wchar_t* status) {
     g_app.running = running;
     SetWindowTextW(g_app.status, status);
     EnableWindow(g_app.prepare, !running);
-    EnableWindow(g_app.capture, !running);
+    EnableWindow(g_app.captureVisible, !running);
+    EnableWindow(g_app.captureUv, !running);
     EnableWindow(g_app.open, !running);
     EnableWindow(g_app.session, !running);
     EnableWindow(g_app.pose, !running);
@@ -136,7 +139,7 @@ void post_log(std::wstring value) {
     PostMessageW(g_app.window, WM_APP_LOG, 0, reinterpret_cast<LPARAM>(text));
 }
 
-void start_command(bool capture) {
+void start_command(int mode) {
     if (g_app.running) return;
     const std::wstring python = path_join(g_app.root, L".venv-pc\\Scripts\\python.exe");
     const std::wstring script = path_join(g_app.root, L"checkerboard_calibration_capture.py");
@@ -155,13 +158,18 @@ void start_command(bool capture) {
     }
     std::wstringstream command;
     command << quote(python) << L" -u " << quote(script);
-    if (capture) {
+    if (mode != 0) {
         const std::wstring id = pose_id();
         if (id.empty()) {
             MessageBoxW(g_app.window, L"Select or enter a pose ID.", L"Checkerboard capture", MB_ICONWARNING | MB_OK);
             return;
         }
-        command << L" capture --session " << quote(session)
+        const wchar_t* subcommand = mode == 1 ? L"capture-visible" : L"capture-uv";
+        const wchar_t* prompt = mode == 1
+            ? L"Before continuing:\n\n1. Keep the checkerboard fixed.\n2. Turn the UV projector Blue LED OFF.\n3. Turn ON external visible white light.\n\nThis captures and verifies the 9x9 checkerboard reference image."
+            : L"Before continuing:\n\n1. Do not move the checkerboard.\n2. Turn OFF external visible white light.\n3. Restore the UV projector Blue LED.\n\nThis captures the UV X and Y pattern sequences.";
+        if (MessageBoxW(g_app.window, prompt, L"Checkerboard capture lighting", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return;
+        command << L" " << subcommand << L" --session " << quote(session)
                 << L" --pose-id " << quote(id)
                 << L" --controller " << quote(controller);
     } else {
@@ -205,7 +213,7 @@ void start_command(bool capture) {
     g_app.process = process.hProcess;
     CloseHandle(process.hThread);
     append_log(L"\r\n> " + command.str() + L"\r\n");
-    set_running(true, capture ? L"Capturing locked pose: X then Y" : L"Preparing calibration session");
+    set_running(true, mode == 1 ? L"Capturing visible checkerboard reference" : mode == 2 ? L"Capturing UV X then Y" : L"Preparing calibration session");
     std::thread([read_pipe, process_handle = process.hProcess]() {
         char buffer[1024];
         DWORD count = 0;
@@ -247,8 +255,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
     switch (message) {
     case WM_COMMAND:
         switch (LOWORD(w_param)) {
-        case IDC_PREPARE: start_command(false); return 0;
-        case IDC_CAPTURE: start_command(true); return 0;
+        case IDC_PREPARE: start_command(0); return 0;
+        case IDC_CAPTURE_VISIBLE: start_command(1); return 0;
+        case IDC_CAPTURE_UV: start_command(2); return 0;
         case IDC_STOP: stop_capture(); return 0;
         case IDC_OPEN: open_session(); return 0;
         default: break;
@@ -287,18 +296,18 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_p
 
 void populate_pose_combo() {
     const wchar_t* poses[] = {
-        L"p01_center_z00 - center, flat, 0 mm",
-        L"p02_center_z05 - center, flat, 5 mm spacer",
-        L"p03_center_z10 - center, flat, 10 mm spacer",
-        L"p04_center_z15 - center, flat, 15 mm spacer",
-        L"p05_pitch_pos10 - center, +10 deg pitch wedge",
-        L"p06_pitch_neg10 - center, -10 deg pitch wedge",
-        L"p07_roll_pos10 - center, +10 deg roll wedge",
-        L"p08_roll_neg10 - center, -10 deg roll wedge",
-        L"p09_yaw_45 - flat, stage rotated 45 deg",
-        L"p10_yaw_90 - flat, stage rotated 90 deg",
-        L"p11_pitch_pos10_z10 - +10 deg pitch, 10 mm spacer",
-        L"p12_roll_pos10_z10 - +10 deg roll, 10 mm spacer",
+        L"p01_center_flat - centered and flat on the stage",
+        L"p02_center_spacer_5 - centered, flat, 5 mm spacer",
+        L"p03_center_spacer_10 - centered, flat, 10 mm spacer",
+        L"p04_left_flat - shifted left, flat",
+        L"p05_right_flat - shifted right, flat",
+        L"p06_top_flat - shifted away from camera, flat",
+        L"p07_bottom_flat - shifted toward camera, flat",
+        L"p08_pitch_forward - forward tilt using any stable wedge",
+        L"p09_pitch_back - backward tilt using any stable wedge",
+        L"p10_roll_left - left tilt using any stable wedge",
+        L"p11_roll_right - right tilt using any stable wedge",
+        L"p12_diagonal_tilt - combined pitch and roll using a stable wedge",
     };
     for (const wchar_t* pose : poses) SendMessageW(g_app.pose, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pose));
     SendMessageW(g_app.pose, CB_SETCURSEL, 0, 0);
@@ -334,15 +343,16 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         75, 125, 475, 260, g_app.window, reinterpret_cast<HMENU>(IDC_POSE), instance, nullptr);
     populate_pose_combo();
     g_app.prepare = make_button(g_app.window, IDC_PREPARE, L"1. Prepare Session", 575, 123, 120, 30);
-    g_app.capture = make_button(g_app.window, IDC_CAPTURE, L"2. Capture Pose", 705, 123, 120, 30);
-    make_label(g_app.window, L"Keep the board fixed while X and Y are captured. Change the board only after completion.", 75, 166, 700, 22);
-    g_app.stop = make_button(g_app.window, IDC_STOP, L"Stop", 75, 198, 100, 30);
-    g_app.open = make_button(g_app.window, IDC_OPEN, L"Open Session Folder", 185, 198, 145, 30);
+    g_app.captureVisible = make_button(g_app.window, IDC_CAPTURE_VISIBLE, L"2. Visible Ref", 705, 123, 120, 30);
+    g_app.captureUv = make_button(g_app.window, IDC_CAPTURE_UV, L"3. UV X/Y", 575, 160, 120, 30);
+    make_label(g_app.window, L"Visible ref: UV off + white light on. UV X/Y: white light off + UV on. Never move the board between steps.", 75, 198, 740, 22);
+    g_app.stop = make_button(g_app.window, IDC_STOP, L"Stop", 75, 230, 100, 30);
+    g_app.open = make_button(g_app.window, IDC_OPEN, L"Open Session Folder", 185, 230, 145, 30);
     EnableWindow(g_app.stop, FALSE);
-    make_label(g_app.window, L"Capture log", 14, 247, 90, 22);
+    make_label(g_app.window, L"Capture log", 14, 279, 90, 22);
     g_app.log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
-        14, 270, 811, 320, g_app.window, reinterpret_cast<HMENU>(IDC_LOG), instance, nullptr);
+        14, 302, 811, 288, g_app.window, reinterpret_cast<HMENU>(IDC_LOG), instance, nullptr);
     ShowWindow(g_app.window, show);
     UpdateWindow(g_app.window);
     MSG message{};

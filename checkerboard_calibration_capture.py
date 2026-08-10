@@ -109,20 +109,40 @@ def _fixed_exposure(camera_config: Path) -> dict[str, float | int]:
     return {"exposure_us": exposure, "gain_db": gain}
 
 
+def _visible_reference_settings(camera_config: Path) -> dict[str, float | int]:
+    """Return the separately configurable exposure for the white-light reference.
+
+    This image is deliberately not captured under the UV structured-light
+    illumination.  It is the camera image used to find the checkerboard
+    corners, so it commonly needs a longer exposure than the UV pattern burst.
+    """
+    config = _read_json(camera_config)
+    capture = config.get("capture", {})
+    reference = capture.get("checkerboard_visible_reference", {}) if isinstance(capture, dict) else {}
+    if not isinstance(reference, dict):
+        raise ValueError("capture.checkerboard_visible_reference must be an object")
+    fallback = _fixed_exposure(camera_config)
+    exposure = int(reference.get("exposure_us", fallback["exposure_us"]))
+    gain = float(reference.get("gain_db", fallback["gain_db"]))
+    if exposure < 1:
+        raise ValueError("capture.checkerboard_visible_reference.exposure_us must be at least 1")
+    return {"exposure_us": exposure, "gain_db": gain}
+
+
 def suggested_poses() -> list[dict[str, Any]]:
     return [
-        {"pose_id": "p01_center_z00", "description": "center, flat, 0 mm"},
-        {"pose_id": "p02_center_z05", "description": "center, flat, 5 mm spacer"},
-        {"pose_id": "p03_center_z10", "description": "center, flat, 10 mm spacer"},
-        {"pose_id": "p04_center_z15", "description": "center, flat, 15 mm spacer"},
-        {"pose_id": "p05_pitch_pos10", "description": "center, +10 deg pitch wedge"},
-        {"pose_id": "p06_pitch_neg10", "description": "center, -10 deg pitch wedge"},
-        {"pose_id": "p07_roll_pos10", "description": "center, +10 deg roll wedge"},
-        {"pose_id": "p08_roll_neg10", "description": "center, -10 deg roll wedge"},
-        {"pose_id": "p09_yaw_45", "description": "flat, stage rotated 45 deg"},
-        {"pose_id": "p10_yaw_90", "description": "flat, stage rotated 90 deg"},
-        {"pose_id": "p11_pitch_pos10_z10", "description": "+10 deg pitch, 10 mm spacer"},
-        {"pose_id": "p12_roll_pos10_z10", "description": "+10 deg roll, 10 mm spacer"},
+        {"pose_id": "p01_center_flat", "description": "centered and flat on the stage"},
+        {"pose_id": "p02_center_spacer_5", "description": "centered, flat, 5 mm spacer"},
+        {"pose_id": "p03_center_spacer_10", "description": "centered, flat, 10 mm spacer"},
+        {"pose_id": "p04_left_flat", "description": "shifted left, flat"},
+        {"pose_id": "p05_right_flat", "description": "shifted right, flat"},
+        {"pose_id": "p06_top_flat", "description": "shifted away from camera, flat"},
+        {"pose_id": "p07_bottom_flat", "description": "shifted toward camera, flat"},
+        {"pose_id": "p08_pitch_forward", "description": "forward tilt using any stable wedge"},
+        {"pose_id": "p09_pitch_back", "description": "backward tilt using any stable wedge"},
+        {"pose_id": "p10_roll_left", "description": "left tilt using any stable wedge"},
+        {"pose_id": "p11_roll_right", "description": "right tilt using any stable wedge"},
+        {"pose_id": "p12_diagonal_tilt", "description": "combined pitch and roll using a stable wedge"},
     ]
 
 
@@ -134,6 +154,7 @@ def create_session(session: Path, pattern_source: Path, camera_config: Path) -> 
         raise ValueError(f"Session directory already exists: {session}")
     _require_pattern_source(pattern_source)
     fixed = _fixed_exposure(camera_config)
+    visible_reference = _visible_reference_settings(camera_config)
     _copy_axis_patterns(pattern_source, session / "patterns_x", "x")
     _copy_axis_patterns(pattern_source, session / "patterns_y", "y")
     session.mkdir(parents=True, exist_ok=True)
@@ -154,10 +175,18 @@ def create_session(session: Path, pattern_source: Path, camera_config: Path) -> 
             "patterns_per_axis": 22,
             "axes": ["x", "y"],
             "frames_per_pose": 44,
+            "visible_reference": {
+                "required": True,
+                "illumination": "external visible white light; UV projector LED off",
+                "projector_uv": "off",
+                "checkerboard_detection": "9x9 inner corners must be detected before UV capture",
+                "camera_settings": visible_reference,
+            },
             "pattern_source": str(pattern_source),
             "camera_config": str(camera_config),
         },
         "suggested_poses": suggested_poses(),
+        "visible_reference_captures": [],
         "captured_poses": [],
         "calibration_fit_status": "not_run",
     }
@@ -165,8 +194,10 @@ def create_session(session: Path, pattern_source: Path, camera_config: Path) -> 
     (session / "captures").mkdir()
     (session / "README_CAPTURE.txt").write_text(
         "Checkerboard capture session\n\n"
-        "For each pose, lock the board so it cannot move between the X and Y sequences.\n"
-        "Run: python checkerboard_calibration_capture.py capture --session <session> --pose-id <pose_id>\n"
+        "For each pose, lock the board so it cannot move between the visible reference and X/Y sequences.\n"
+        "1. Turn the UV projector LED off, turn on external visible white light, then run capture-visible.\n"
+        "2. Turn visible light off, restore the UV projector LED, then run capture-uv.\n"
+        "The visible reference must detect all 9x9 checkerboard inner corners before UV capture can start.\n"
         "Each pose stores 22 X-axis frames and 22 Y-axis frames at the fixed camera exposure.\n"
         "This session is capture evidence only. It does not calculate calibration parameters.\n",
         encoding="utf-8",
@@ -193,14 +224,89 @@ def _verify_scan(scan_dir: Path, expected_exposure_us: int) -> dict[str, Any]:
     }
 
 
-def capture_pose(session: Path, pose_id: str, controller: Path) -> None:
+def _visible_reference_entry(manifest: dict[str, Any], pose_id: str) -> dict[str, Any] | None:
+    for item in manifest.get("visible_reference_captures", []):
+        if item.get("pose_id") == pose_id:
+            return item
+    return None
+
+
+def _require_visible_reference_workflow(manifest: dict[str, Any]) -> None:
+    if not isinstance(manifest.get("capture", {}).get("visible_reference"), dict):
+        raise RuntimeError(
+            "This session was created by the older UV-only workflow. "
+            "Create a new checkerboard session so every pose has a verified visible-light reference."
+        )
+
+
+def _detect_checkerboard(reference_path: Path, inner_corners: tuple[int, int]) -> int:
+    image = cv2.imread(str(reference_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise RuntimeError(f"Could not read visible reference image: {reference_path}")
+    found, corners = cv2.findChessboardCornersSB(image, inner_corners)
+    if not found or corners is None:
+        raise RuntimeError(
+            "Visible reference does not contain a detectable 9x9 checkerboard. "
+            "Keep the UV projector LED off, increase visible-light contrast/exposure, and recapture."
+        )
+    return int(len(corners))
+
+
+def capture_visible_reference(session: Path, pose_id: str, controller: Path) -> None:
     if not POSE_ID_PATTERN.fullmatch(pose_id):
         raise ValueError("pose_id may use only letters, numbers, '.', '_' and '-'")
     session = session.resolve()
     manifest_path = session / "session_manifest.json"
     manifest = _read_json(manifest_path)
+    _require_visible_reference_workflow(manifest)
+    if any(item["pose_id"] == pose_id for item in manifest.get("captured_poses", [])):
+        raise ValueError(f"Pose is already complete: {pose_id}")
+    camera_config = Path(manifest["capture"]["camera_config"])
+    settings = manifest["capture"]["visible_reference"]["camera_settings"]
+    captures = session / "captures"
+    scan_id = f"{pose_id}_visible_reference"
+    command = [
+        sys.executable, str(controller), "--single-capture", "--output", str(captures),
+        "--scan-id", scan_id, "--camera-config", str(camera_config),
+        "--exposure-us", str(settings["exposure_us"]), "--gain-db", str(settings["gain_db"]),
+    ]
+    print("[checkerboard] capture visible-light reference (UV projector LED must be off)", flush=True)
+    subprocess.run(command, check=True)
+    reference_dir = captures / scan_id
+    capture_log = _read_json(reference_dir / "capture_log.json")
+    reference_path = reference_dir / str(capture_log["filename"])
+    corner_count = _detect_checkerboard(reference_path, tuple(manifest["checkerboard"]["inner_corners"]))
+    entry = {
+        "pose_id": pose_id,
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+        "illumination": manifest["capture"]["visible_reference"]["illumination"],
+        "image": str(reference_path),
+        "camera_settings": settings,
+        "checkerboard_detected": True,
+        "corner_count": corner_count,
+    }
+    references = [item for item in manifest.get("visible_reference_captures", []) if item.get("pose_id") != pose_id]
+    references.append(entry)
+    manifest["visible_reference_captures"] = references
+    _write_json(manifest_path, manifest)
+    print(f"[checkerboard] visible reference verified pose={pose_id} corners={corner_count}", flush=True)
+
+
+def capture_uv_pose(session: Path, pose_id: str, controller: Path) -> None:
+    if not POSE_ID_PATTERN.fullmatch(pose_id):
+        raise ValueError("pose_id may use only letters, numbers, '.', '_' and '-'")
+    session = session.resolve()
+    manifest_path = session / "session_manifest.json"
+    manifest = _read_json(manifest_path)
+    _require_visible_reference_workflow(manifest)
     if any(item["pose_id"] == pose_id for item in manifest.get("captured_poses", [])):
         raise ValueError(f"Pose already captured: {pose_id}")
+    reference = _visible_reference_entry(manifest, pose_id)
+    if reference is None:
+        raise RuntimeError(
+            f"No verified visible-light reference exists for {pose_id}. "
+            "Capture it with the UV projector LED off before the UV X/Y sequence."
+        )
     fixed = manifest["capture"]["fixed_camera_settings"]
     captures = session / "captures"
     camera_config = Path(manifest["capture"]["camera_config"])
@@ -235,12 +341,14 @@ def capture_pose(session: Path, pose_id: str, controller: Path) -> None:
             "pose_id": pose_id,
             "captured_at": datetime.now().isoformat(timespec="seconds"),
             "board_locked_during_x_and_y": True,
+            "board_locked_from_visible_reference_through_x_and_y": True,
+            "visible_reference": reference,
             "x_axis": x_summary,
             "y_axis": y_summary,
         }
     )
     _write_json(manifest_path, manifest)
-    print(f"[checkerboard] complete pose={pose_id} frames=44", flush=True)
+    print(f"[checkerboard] complete pose={pose_id} visible_reference=1 uv_frames=44", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -250,10 +358,14 @@ def parse_args() -> argparse.Namespace:
     setup.add_argument("--session", required=True, type=Path)
     setup.add_argument("--patterns", required=True, type=Path, help="Current 22-frame scan pattern folder.")
     setup.add_argument("--camera-config", default=Path("camera_config.json"), type=Path)
-    capture = subparsers.add_parser("capture", help="Capture one locked checkerboard pose as X then Y sequences.")
-    capture.add_argument("--session", required=True, type=Path)
-    capture.add_argument("--pose-id", required=True)
-    capture.add_argument("--controller", default=Path("structured_light_pc_controller.py"), type=Path)
+    for name, help_text in (
+        ("capture-visible", "Capture and verify a visible-light checkerboard reference with UV projector LED off."),
+        ("capture-uv", "Capture UV X then Y sequences after a verified visible-light reference."),
+    ):
+        capture = subparsers.add_parser(name, help=help_text)
+        capture.add_argument("--session", required=True, type=Path)
+        capture.add_argument("--pose-id", required=True)
+        capture.add_argument("--controller", default=Path("structured_light_pc_controller.py"), type=Path)
     return parser.parse_args()
 
 
@@ -263,7 +375,10 @@ def main() -> int:
         session = create_session(args.session, args.patterns, args.camera_config)
         print(f"[checkerboard] session ready: {session}")
         return 0
-    capture_pose(args.session, args.pose_id, args.controller.resolve())
+    if args.command == "capture-visible":
+        capture_visible_reference(args.session, args.pose_id, args.controller.resolve())
+    else:
+        capture_uv_pose(args.session, args.pose_id, args.controller.resolve())
     return 0
 
 
