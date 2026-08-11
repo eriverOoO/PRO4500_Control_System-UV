@@ -1,0 +1,44 @@
+{
+  "projector": {
+    "monitor_index": 1,
+    "width_px": 1280,
+    "height_px": 800,
+    "fringe_period_px": 12,
+    "settle_ms": 1000
+  },
+  "camera": {
+    "provider": "ximea",
+    "ximea": {
+      "device_index": 0,
+      "dll_path": "",
+      "exposure_us": 15000,
+      "gain_db": 0.0,
+      "fps": 10.0,
+      "trigger_mode": "software",
+      "image_format": "mono8",
+      "timeout_ms": 15000,
+      "width": 0,
+      "height": 0
+    }
+  },
+  "capture": {
+    "flush_frames_after_pattern": 2,
+    "minimum_board_area_ratio": 0.01,
+    "recommended_pose_count": 12
+  },
+  "calibration_quality": {
+    "minimum_accepted_poses": 8,
+    "max_camera_rms_px": 1.0,
+    "max_projector_rms_px": 1.5,
+    "max_stereo_rms_px": 2.0
+  },
+  "checkerboard": {
+    "inner_corners": [21, 14],
+    "square_size_mm": 12.0
+  },
+  "stage_aruco": {
+    "dictionary": "DICT_4X4_50",
+    "marker_size_mm": 10.0,
+    "marker_ids": [0, 1, 2, 3]
+  }
+}

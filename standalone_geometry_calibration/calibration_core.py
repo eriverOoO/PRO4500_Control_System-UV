@@ -1,0 +1,367 @@
+"""Standalone camera-projector geometry calibration primitives.
+
+This module intentionally does not import the production capture controller or
+the PCB decoder.  The only shared component is the low-level XIMEA provider.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+
+
+PHASES = (0, 90, 180, 270)
+
+
+@dataclass(frozen=True)
+class PatternProfile:
+    width: int = 1280
+    height: int = 800
+    period_px: int = 12
+
+    def axis_length(self, axis: str) -> int:
+        return self.width if axis == "x" else self.height
+
+    def gray_bits(self, axis: str) -> int:
+        cycles = math.ceil(self.axis_length(axis) / self.period_px)
+        return max(1, math.ceil(math.log2(cycles)))
+
+
+def _write_png(path: Path, image: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(path), image):
+        raise RuntimeError(f"Could not write image: {path}")
+
+
+def generate_patterns(root: Path, profile: PatternProfile) -> dict[str, Any]:
+    """Generate and persist all patterns before the first hardware capture."""
+    root.mkdir(parents=True, exist_ok=True)
+    shape = (profile.height, profile.width)
+    _write_png(root / "reference_black.png", np.zeros(shape, dtype=np.uint8))
+    _write_png(root / "reference_white.png", np.full(shape, 255, dtype=np.uint8))
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "projector_size_px": [profile.width, profile.height],
+        "period_px": profile.period_px,
+        "axes": {},
+    }
+    yy, xx = np.indices(shape)
+    for axis, coordinate in (("x", xx), ("y", yy)):
+        axis_dir = root / axis
+        bit_count = profile.gray_bits(axis)
+        cycle = coordinate // profile.period_px
+        gray = np.bitwise_xor(cycle, cycle >> 1)
+        entries: list[dict[str, Any]] = []
+        for bit_index in range(bit_count):
+            shift = bit_count - 1 - bit_index
+            normal = (((gray >> shift) & 1) * 255).astype(np.uint8)
+            inverse = 255 - normal
+            normal_name = f"gray_{bit_index:02d}.png"
+            inverse_name = f"gray_{bit_index:02d}_inv.png"
+            _write_png(axis_dir / normal_name, normal)
+            _write_png(axis_dir / inverse_name, inverse)
+            entries.extend(
+                (
+                    {"kind": "gray", "bit": bit_index, "inverse": False, "file": normal_name},
+                    {"kind": "gray", "bit": bit_index, "inverse": True, "file": inverse_name},
+                )
+            )
+        phase = 2.0 * np.pi * coordinate.astype(np.float64) / profile.period_px
+        for phase_deg in PHASES:
+            image = np.rint(127.5 + 127.5 * np.cos(phase + np.deg2rad(phase_deg)))
+            name = f"sine_{phase_deg:03d}.png"
+            _write_png(axis_dir / name, np.clip(image, 0, 255).astype(np.uint8))
+            entries.append({"kind": "sine", "phase_deg": phase_deg, "file": name})
+        manifest["axes"][axis] = {"gray_bits": bit_count, "sequence": entries}
+    (root / "pattern_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return manifest
+
+
+def detect_checkerboard(
+    black: np.ndarray,
+    white: np.ndarray,
+    inner_corners: tuple[int, int],
+) -> tuple[np.ndarray | None, np.ndarray, dict[str, Any]]:
+    """Detect the printed board from uniform UV illumination minus ambient."""
+    black_gray = _gray_u8(black)
+    white_gray = _gray_u8(white)
+    response = cv2.subtract(white_gray, black_gray)
+    response = cv2.normalize(response, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(response)
+    flags = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
+    found, corners = cv2.findChessboardCornersSB(enhanced, inner_corners, flags=flags)
+    if not found:
+        found, corners = cv2.findChessboardCornersSB(255 - enhanced, inner_corners, flags=flags)
+    report: dict[str, Any] = {
+        "found": bool(found),
+        "inner_corners": list(inner_corners),
+        "contrast_p95_minus_p05": float(np.percentile(response, 95) - np.percentile(response, 5)),
+        "laplacian_variance": float(cv2.Laplacian(enhanced, cv2.CV_64F).var()),
+    }
+    if not found or corners is None:
+        return None, enhanced, report
+    points = corners.reshape(-1, 2).astype(np.float32)
+    hull_area = float(cv2.contourArea(cv2.convexHull(points)))
+    report["board_image_area_ratio"] = hull_area / float(enhanced.size)
+    report["corner_count"] = int(points.shape[0])
+    return points, enhanced, report
+
+
+def draw_checkerboard_detection(
+    image: np.ndarray,
+    inner_corners: tuple[int, int],
+    corners: np.ndarray | None,
+) -> np.ndarray:
+    preview = cv2.cvtColor(_gray_u8(image), cv2.COLOR_GRAY2BGR)
+    if corners is not None:
+        cv2.drawChessboardCorners(preview, inner_corners, corners.reshape(-1, 1, 2), True)
+    return preview
+
+
+def _gray_u8(image: np.ndarray) -> np.ndarray:
+    array = np.asarray(image)
+    if array.ndim == 3:
+        array = cv2.cvtColor(array, cv2.COLOR_BGR2GRAY)
+    if array.dtype == np.uint8:
+        return array
+    maximum = float(np.iinfo(array.dtype).max) if np.issubdtype(array.dtype, np.integer) else 1.0
+    return np.clip(array.astype(np.float32) * (255.0 / max(maximum, 1.0)), 0, 255).astype(np.uint8)
+
+
+def bilinear_sample(image: np.ndarray, points: np.ndarray) -> np.ndarray:
+    map_x = points[:, 0].astype(np.float32).reshape(-1, 1)
+    map_y = points[:, 1].astype(np.float32).reshape(-1, 1)
+    return cv2.remap(
+        np.asarray(image, dtype=np.float32), map_x, map_y, cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=np.nan,
+    ).reshape(-1)
+
+
+def gray_to_binary(gray: np.ndarray, bits: int) -> np.ndarray:
+    binary = gray.astype(np.int32).copy()
+    shifted = binary.copy()
+    for _ in range(bits):
+        shifted >>= 1
+        binary ^= shifted
+    return binary
+
+
+def decode_projector_axis(
+    capture_dir: Path,
+    pattern_axis_manifest: dict[str, Any],
+    corners: np.ndarray,
+    period_px: int,
+    axis_length: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decode continuous projector coordinates only at checkerboard corners."""
+    bit_count = int(pattern_axis_manifest["gray_bits"])
+    gray_value = np.zeros(corners.shape[0], dtype=np.int32)
+    confidence = np.full(corners.shape[0], np.inf, dtype=np.float32)
+    for bit_index in range(bit_count):
+        normal = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}.png"), cv2.IMREAD_GRAYSCALE)
+        inverse = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}_inv.png"), cv2.IMREAD_GRAYSCALE)
+        if normal is None or inverse is None:
+            raise ValueError(f"Missing Gray pair {bit_index} in {capture_dir}")
+        delta = bilinear_sample(normal, corners) - bilinear_sample(inverse, corners)
+        gray_value = (gray_value << 1) | (delta >= 0).astype(np.int32)
+        confidence = np.minimum(confidence, np.abs(delta))
+    cycle = gray_to_binary(gray_value, bit_count)
+    sine = []
+    for phase_deg in PHASES:
+        image = cv2.imread(str(capture_dir / f"sine_{phase_deg:03d}.png"), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise ValueError(f"Missing sine {phase_deg} in {capture_dir}")
+        sine.append(bilinear_sample(image, corners))
+    wrapped = np.mod(np.arctan2(sine[3] - sine[1], sine[0] - sine[2]), 2.0 * np.pi)
+    coordinate = cycle.astype(np.float64) * period_px + wrapped * period_px / (2.0 * np.pi)
+    valid = (
+        np.isfinite(coordinate)
+        & (coordinate >= 0)
+        & (coordinate < axis_length)
+        & (confidence >= 5.0)
+    )
+    return coordinate.astype(np.float32), valid
+
+
+def board_object_points(inner_corners: tuple[int, int], square_size_mm: float) -> np.ndarray:
+    cols, rows = inner_corners
+    points = np.zeros((cols * rows, 3), dtype=np.float32)
+    grid = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+    points[:, :2] = grid.astype(np.float32) * float(square_size_mm)
+    return points
+
+
+def solve_geometry(session: Path) -> dict[str, Any]:
+    manifest_path = session / "session_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    inner = tuple(int(v) for v in manifest["checkerboard"]["inner_corners"])
+    square_mm = float(manifest["checkerboard"]["square_size_mm"])
+    pattern = manifest["pattern"]
+    projector_width, projector_height = (int(v) for v in pattern["projector_size_px"])
+    pattern_manifest = json.loads((session / "patterns" / "pattern_manifest.json").read_text(encoding="utf-8"))
+    object_template = board_object_points(inner, square_mm)
+    object_points: list[np.ndarray] = []
+    camera_points: list[np.ndarray] = []
+    projector_points: list[np.ndarray] = []
+    pose_reports: list[dict[str, Any]] = []
+    camera_size: tuple[int, int] | None = None
+    for pose in manifest.get("captured_poses", []):
+        pose_dir = session / pose["relative_dir"]
+        corners = np.load(pose_dir / "checkerboard_corners.npy", allow_pickle=False).astype(np.float32)
+        x, valid_x = decode_projector_axis(
+            pose_dir / "x", pattern_manifest["axes"]["x"], corners,
+            int(pattern["period_px"]), projector_width,
+        )
+        y, valid_y = decode_projector_axis(
+            pose_dir / "y", pattern_manifest["axes"]["y"], corners,
+            int(pattern["period_px"]), projector_height,
+        )
+        valid = valid_x & valid_y
+        if np.count_nonzero(valid) < 12:
+            pose_reports.append({"pose_id": pose["pose_id"], "used": False, "reason": "too few decoded corners"})
+            continue
+        camera_image = cv2.imread(str(pose_dir / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
+        if camera_image is None:
+            raise ValueError(f"Missing reference_white.png in {pose_dir}")
+        camera_size = (camera_image.shape[1], camera_image.shape[0])
+        object_points.append(object_template[valid])
+        camera_points.append(corners[valid].reshape(-1, 1, 2))
+        projector_points.append(np.column_stack((x[valid], y[valid])).astype(np.float32).reshape(-1, 1, 2))
+        pose_reports.append({"pose_id": pose["pose_id"], "used": True, "decoded_corner_count": int(np.count_nonzero(valid))})
+    quality_limits = manifest.get("calibration_quality", {})
+    minimum_poses = int(quality_limits.get("minimum_accepted_poses", 8))
+    if camera_size is None or len(object_points) < minimum_poses:
+        raise ValueError(
+            f"At least {minimum_poses} accepted checkerboard poses are required; "
+            "10-16 diverse poses are recommended"
+        )
+    camera_rms, camera_k, camera_dist, _rvecs, _tvecs = cv2.calibrateCamera(
+        object_points, camera_points, camera_size, None, None
+    )
+    projector_rms, projector_k, projector_dist, _prvecs, _ptvecs = cv2.calibrateCamera(
+        object_points, projector_points, (projector_width, projector_height), None, None
+    )
+    stereo_flags = cv2.CALIB_FIX_INTRINSIC
+    stereo_rms, camera_k, camera_dist, projector_k, projector_dist, rotation, translation, essential, fundamental = cv2.stereoCalibrate(
+        object_points,
+        camera_points,
+        projector_points,
+        camera_k,
+        camera_dist,
+        projector_k,
+        projector_dist,
+        camera_size,
+        flags=stereo_flags,
+        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 1e-9),
+    )
+    quality_checks = {
+        "accepted_pose_count": len(object_points),
+        "minimum_accepted_poses": minimum_poses,
+        "camera_rms_pass": float(camera_rms) <= float(quality_limits.get("max_camera_rms_px", 1.0)),
+        "projector_rms_pass": float(projector_rms) <= float(quality_limits.get("max_projector_rms_px", 1.5)),
+        "stereo_rms_pass": float(stereo_rms) <= float(quality_limits.get("max_stereo_rms_px", 2.0)),
+        "limits": quality_limits,
+    }
+    quality_checks["valid"] = bool(
+        quality_checks["camera_rms_pass"]
+        and quality_checks["projector_rms_pass"]
+        and quality_checks["stereo_rms_pass"]
+    )
+    result = {
+        "schema_version": 1,
+        "method": "gray_phase_camera_projector_stereo_calibration",
+        "units": "mm",
+        "camera": {
+            "image_size_px": list(camera_size),
+            "K": camera_k.tolist(),
+            "distortion": camera_dist.reshape(-1).tolist(),
+            "rms_reprojection_px": float(camera_rms),
+        },
+        "projector": {
+            "image_size_px": [projector_width, projector_height],
+            "K": projector_k.tolist(),
+            "distortion": projector_dist.reshape(-1).tolist(),
+            "rms_reprojection_px": float(projector_rms),
+        },
+        "camera_to_projector": {
+            "R": rotation.tolist(),
+            "t_mm": translation.reshape(-1).tolist(),
+            "baseline_mm": float(np.linalg.norm(translation)),
+            "stereo_rms_px": float(stereo_rms),
+            "essential": essential.tolist(),
+            "fundamental": fundamental.tolist(),
+        },
+        "checkerboard": manifest["checkerboard"],
+        "pose_reports": pose_reports,
+        "quality": quality_checks,
+        "stage_plane": None,
+    }
+    output = session / "geometry_calibration.json"
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
+def estimate_stage_plane_from_aruco(
+    image: np.ndarray,
+    calibration: dict[str, Any],
+    dictionary_name: str,
+    marker_size_mm: float,
+    requested_ids: list[int],
+) -> tuple[dict[str, Any], np.ndarray]:
+    gray = _gray_u8(image)
+    dictionary_id = getattr(cv2.aruco, dictionary_name)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+    corners, ids, _rejected = detector.detectMarkers(gray)
+    if ids is None:
+        raise ValueError("No ArUco marker was detected in the stage image")
+    camera_k = np.asarray(calibration["camera"]["K"], dtype=np.float64)
+    distortion = np.asarray(calibration["camera"]["distortion"], dtype=np.float64)
+    half = marker_size_mm / 2.0
+    object_corners = np.array(
+        [[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]], dtype=np.float32
+    )
+    normals: list[np.ndarray] = []
+    offsets: list[float] = []
+    used_ids: list[int] = []
+    for marker_corners, marker_id in zip(corners, ids.reshape(-1), strict=True):
+        marker_id = int(marker_id)
+        if requested_ids and marker_id not in requested_ids:
+            continue
+        ok, rvec, tvec = cv2.solvePnP(
+            object_corners, marker_corners.reshape(4, 2), camera_k, distortion,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+        if not ok:
+            continue
+        rotation, _ = cv2.Rodrigues(rvec)
+        normal = rotation[:, 2]
+        if normal[2] > 0:
+            normal = -normal
+        normal /= np.linalg.norm(normal)
+        normals.append(normal)
+        offsets.append(float(-normal @ tvec.reshape(3)))
+        used_ids.append(marker_id)
+    if not normals:
+        raise ValueError("Requested ArUco markers were not detected or pose estimation failed")
+    normal = np.mean(np.stack(normals), axis=0)
+    normal /= np.linalg.norm(normal)
+    offset = float(np.median(offsets))
+    preview = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    cv2.aruco.drawDetectedMarkers(preview, corners, ids)
+    return {
+        "equation_camera_coordinates": "normal dot X + offset_mm = 0",
+        "normal": normal.tolist(),
+        "offset_mm": offset,
+        "marker_size_mm": float(marker_size_mm),
+        "marker_ids": used_ids,
+        "z0_is_marker_print_surface": True,
+    }, preview
