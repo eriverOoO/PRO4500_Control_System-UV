@@ -32,6 +32,12 @@
     "max_projector_rms_px": 1.5,
     "max_stereo_rms_px": 2.0
   },
+  "projector_corner_estimation": {
+    "local_patch_size_px": 47,
+    "minimum_valid_pixels": 24,
+    "minimum_gray_pair_contrast_u8": 5.0,
+    "minimum_sine_modulation_u8": 5.0
+  },
   "checkerboard": {
     "inner_corners": [21, 14],
     "square_size_mm": 12.0

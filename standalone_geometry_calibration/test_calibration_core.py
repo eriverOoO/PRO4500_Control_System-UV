@@ -8,6 +8,7 @@ import numpy as np
 from standalone_geometry_calibration.calibration_core import (
     PatternProfile,
     decode_projector_axis,
+    estimate_projector_corners_from_local_homographies,
     generate_patterns,
     gray_to_binary,
 )
@@ -41,3 +42,17 @@ def test_checkerboard_pattern_files_are_lossless_png(tmp_path) -> None:
     image = cv2.imread(str(tmp_path / "x" / "gray_00.png"), cv2.IMREAD_GRAYSCALE)
     assert image is not None
     assert set(np.unique(image)) <= {0, 255}
+
+
+def test_local_homography_estimates_corner_when_center_is_uv_invalid() -> None:
+    yy, xx = np.indices((80, 100))
+    projector_x = (1.2 * xx + 0.03 * yy + 7.0).astype(np.float32)
+    projector_y = (-0.02 * xx + 1.1 * yy + 4.0).astype(np.float32)
+    valid = np.ones((80, 100), dtype=bool)
+    valid[38:43, 48:53] = False
+    corner = np.array([[50.0, 40.0]], dtype=np.float32)
+    result, accepted, _reports = estimate_projector_corners_from_local_homographies(
+        corner, projector_x, projector_y, valid, patch_size_px=31, minimum_valid_pixels=24
+    )
+    assert accepted[0]
+    assert np.allclose(result[0], [68.2, 47.0], atol=0.1)

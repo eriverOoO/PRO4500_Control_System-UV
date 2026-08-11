@@ -161,6 +161,7 @@ class CalibrationCapture:
             },
             "camera_settings": CameraProvider.load_settings(self.config_path).as_dict(),
             "calibration_quality": self.config["calibration_quality"],
+            "projector_corner_estimation": self.config["projector_corner_estimation"],
             "captured_poses": [],
             "rejected_poses": [],
             "geometry_calibration": "not_run",

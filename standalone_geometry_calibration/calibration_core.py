@@ -191,6 +191,118 @@ def decode_projector_axis(
     return coordinate.astype(np.float32), valid
 
 
+def decode_projector_axis_dense(
+    capture_dir: Path,
+    pattern_axis_manifest: dict[str, Any],
+    period_px: int,
+    axis_length: int,
+    *,
+    minimum_gray_contrast: float,
+    minimum_modulation: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decode a dense axis map while rejecting ink-dark/low-modulation pixels."""
+    bit_count = int(pattern_axis_manifest["gray_bits"])
+    gray_value: np.ndarray | None = None
+    confidence: np.ndarray | None = None
+    for bit_index in range(bit_count):
+        normal = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}.png"), cv2.IMREAD_GRAYSCALE)
+        inverse = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}_inv.png"), cv2.IMREAD_GRAYSCALE)
+        if normal is None or inverse is None:
+            raise ValueError(f"Missing Gray pair {bit_index} in {capture_dir}")
+        delta = normal.astype(np.float32) - inverse.astype(np.float32)
+        if gray_value is None:
+            gray_value = np.zeros(normal.shape, dtype=np.int32)
+            confidence = np.full(normal.shape, np.inf, dtype=np.float32)
+        gray_value = (gray_value << 1) | (delta >= 0).astype(np.int32)
+        confidence = np.minimum(confidence, np.abs(delta))
+    assert gray_value is not None and confidence is not None
+    sine_images: list[np.ndarray] = []
+    for phase_deg in PHASES:
+        image = cv2.imread(str(capture_dir / f"sine_{phase_deg:03d}.png"), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            raise ValueError(f"Missing sine {phase_deg} in {capture_dir}")
+        sine_images.append(image.astype(np.float32))
+    in_phase = sine_images[0] - sine_images[2]
+    quadrature = sine_images[3] - sine_images[1]
+    modulation = 0.5 * np.hypot(in_phase, quadrature)
+    wrapped = np.mod(np.arctan2(quadrature, in_phase), 2.0 * np.pi)
+    cycle = gray_to_binary(gray_value, bit_count)
+    coordinate = cycle.astype(np.float32) * period_px + wrapped.astype(np.float32) * period_px / (2.0 * np.pi)
+    valid = (
+        np.isfinite(coordinate)
+        & (coordinate >= 0)
+        & (coordinate < axis_length)
+        & (confidence >= float(minimum_gray_contrast))
+        & (modulation >= float(minimum_modulation))
+    )
+    return coordinate.astype(np.float32), valid
+
+
+def estimate_projector_corners_from_local_homographies(
+    camera_corners: np.ndarray,
+    projector_x: np.ndarray,
+    projector_y: np.ndarray,
+    valid: np.ndarray,
+    *,
+    patch_size_px: int,
+    minimum_valid_pixels: int,
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
+    """Evaluate projector coordinates at ink boundaries from nearby valid pixels.
+
+    Printed black squares may suppress all UV modulation at the mathematical
+    checkerboard corner.  A small surrounding patch still contains illuminated
+    white regions.  Fit a robust local camera-to-projector homography on those
+    pixels and evaluate it at the sub-pixel checkerboard corner.
+    """
+    if patch_size_px < 5 or patch_size_px % 2 == 0:
+        raise ValueError("local patch size must be an odd integer >= 5")
+    radius = patch_size_px // 2
+    height, width = valid.shape
+    estimates = np.full((camera_corners.shape[0], 2), np.nan, dtype=np.float32)
+    accepted = np.zeros(camera_corners.shape[0], dtype=bool)
+    reports: list[dict[str, Any]] = []
+    for index, corner in enumerate(camera_corners):
+        cx, cy = (float(corner[0]), float(corner[1]))
+        x0 = max(0, int(math.floor(cx)) - radius)
+        x1 = min(width, int(math.floor(cx)) + radius + 1)
+        y0 = max(0, int(math.floor(cy)) - radius)
+        y1 = min(height, int(math.floor(cy)) + radius + 1)
+        patch_valid = valid[y0:y1, x0:x1]
+        yy, xx = np.nonzero(patch_valid)
+        count = int(xx.size)
+        report: dict[str, Any] = {"corner_index": index, "valid_patch_pixels": count, "accepted": False}
+        if count < minimum_valid_pixels:
+            reports.append(report)
+            continue
+        camera_points = np.column_stack((xx + x0, yy + y0)).astype(np.float32)
+        projector_points = np.column_stack(
+            (projector_x[y0:y1, x0:x1][patch_valid], projector_y[y0:y1, x0:x1][patch_valid])
+        ).astype(np.float32)
+        homography, inliers = cv2.findHomography(
+            camera_points, projector_points, method=cv2.RANSAC, ransacReprojThreshold=1.5
+        )
+        if homography is None or inliers is None or int(np.count_nonzero(inliers)) < minimum_valid_pixels:
+            reports.append(report)
+            continue
+        value = cv2.perspectiveTransform(
+            np.array([[[cx, cy]]], dtype=np.float32), homography
+        ).reshape(2)
+        if not np.all(np.isfinite(value)):
+            reports.append(report)
+            continue
+        estimates[index] = value
+        accepted[index] = True
+        report.update(
+            {
+                "accepted": True,
+                "ransac_inliers": int(np.count_nonzero(inliers)),
+                "projector_xy": value.tolist(),
+            }
+        )
+        reports.append(report)
+    return estimates, accepted, reports
+
+
 def board_object_points(inner_corners: tuple[int, int], square_size_mm: float) -> np.ndarray:
     cols, rows = inner_corners
     points = np.zeros((cols * rows, 3), dtype=np.float32)
@@ -216,15 +328,31 @@ def solve_geometry(session: Path) -> dict[str, Any]:
     for pose in manifest.get("captured_poses", []):
         pose_dir = session / pose["relative_dir"]
         corners = np.load(pose_dir / "checkerboard_corners.npy", allow_pickle=False).astype(np.float32)
-        x, valid_x = decode_projector_axis(
-            pose_dir / "x", pattern_manifest["axes"]["x"], corners,
-            int(pattern["period_px"]), projector_width,
+        corner_config = manifest.get("projector_corner_estimation", {})
+        x_map, valid_x = decode_projector_axis_dense(
+            pose_dir / "x",
+            pattern_manifest["axes"]["x"],
+            int(pattern["period_px"]),
+            projector_width,
+            minimum_gray_contrast=float(corner_config.get("minimum_gray_pair_contrast_u8", 5.0)),
+            minimum_modulation=float(corner_config.get("minimum_sine_modulation_u8", 5.0)),
         )
-        y, valid_y = decode_projector_axis(
-            pose_dir / "y", pattern_manifest["axes"]["y"], corners,
-            int(pattern["period_px"]), projector_height,
+        y_map, valid_y = decode_projector_axis_dense(
+            pose_dir / "y",
+            pattern_manifest["axes"]["y"],
+            int(pattern["period_px"]),
+            projector_height,
+            minimum_gray_contrast=float(corner_config.get("minimum_gray_pair_contrast_u8", 5.0)),
+            minimum_modulation=float(corner_config.get("minimum_sine_modulation_u8", 5.0)),
         )
-        valid = valid_x & valid_y
+        projector_corners, valid, corner_reports = estimate_projector_corners_from_local_homographies(
+            corners,
+            x_map,
+            y_map,
+            valid_x & valid_y,
+            patch_size_px=int(corner_config.get("local_patch_size_px", 47)),
+            minimum_valid_pixels=int(corner_config.get("minimum_valid_pixels", 24)),
+        )
         if np.count_nonzero(valid) < 12:
             pose_reports.append({"pose_id": pose["pose_id"], "used": False, "reason": "too few decoded corners"})
             continue
@@ -234,8 +362,19 @@ def solve_geometry(session: Path) -> dict[str, Any]:
         camera_size = (camera_image.shape[1], camera_image.shape[0])
         object_points.append(object_template[valid])
         camera_points.append(corners[valid].reshape(-1, 1, 2))
-        projector_points.append(np.column_stack((x[valid], y[valid])).astype(np.float32).reshape(-1, 1, 2))
-        pose_reports.append({"pose_id": pose["pose_id"], "used": True, "decoded_corner_count": int(np.count_nonzero(valid))})
+        projector_points.append(projector_corners[valid].astype(np.float32).reshape(-1, 1, 2))
+        pose_reports.append(
+            {
+                "pose_id": pose["pose_id"],
+                "used": True,
+                "decoded_corner_count": int(np.count_nonzero(valid)),
+                "projector_corner_method": (
+                    f"{int(corner_config.get('local_patch_size_px', 47))}px_"
+                    "local_homography_on_uv_valid_pixels"
+                ),
+                "corner_reports": corner_reports,
+            }
+        )
     quality_limits = manifest.get("calibration_quality", {})
     minimum_poses = int(quality_limits.get("minimum_accepted_poses", 8))
     if camera_size is None or len(object_points) < minimum_poses:
