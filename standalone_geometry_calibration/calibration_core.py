@@ -88,31 +88,58 @@ def generate_patterns(root: Path, profile: PatternProfile) -> dict[str, Any]:
 def detect_checkerboard(
     black: np.ndarray,
     white: np.ndarray,
-    inner_corners: tuple[int, int],
+    inner_corners: tuple[int, int] | list[tuple[int, int]],
 ) -> tuple[np.ndarray | None, np.ndarray, dict[str, Any]]:
-    """Detect the printed board from uniform UV illumination minus ambient."""
+    """Detect the largest configured local grid visible in the camera FOV."""
+    if isinstance(inner_corners, tuple) and len(inner_corners) == 2 and isinstance(inner_corners[0], int):
+        candidates = [inner_corners]
+    else:
+        candidates = [tuple(int(v) for v in item) for item in inner_corners]
+    candidates.sort(key=lambda size: size[0] * size[1], reverse=True)
     black_gray = _gray_u8(black)
     white_gray = _gray_u8(white)
     response = cv2.subtract(white_gray, black_gray)
     response = cv2.normalize(response, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(response)
+    sources = (
+        ("projector_black", black_gray),
+        ("projector_white", white_gray),
+        ("white_minus_black", response),
+    )
     flags = cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY | cv2.CALIB_CB_NORMALIZE_IMAGE
-    found, corners = cv2.findChessboardCornersSB(enhanced, inner_corners, flags=flags)
-    if not found:
-        found, corners = cv2.findChessboardCornersSB(255 - enhanced, inner_corners, flags=flags)
     report: dict[str, Any] = {
-        "found": bool(found),
-        "inner_corners": list(inner_corners),
+        "found": False,
+        "visible_grid_candidates": [list(size) for size in candidates],
         "contrast_p95_minus_p05": float(np.percentile(response, 95) - np.percentile(response, 5)),
-        "laplacian_variance": float(cv2.Laplacian(enhanced, cv2.CV_64F).var()),
+        "laplacian_variance": float(cv2.Laplacian(black_gray, cv2.CV_64F).var()),
     }
-    if not found or corners is None:
-        return None, enhanced, report
+    selected_image = response
+    corners = None
+    selected_size: tuple[int, int] | None = None
+    selected_source = "none"
+    for size in candidates:
+        for source_name, source_image in sources:
+            for polarity_name, candidate_image in (("normal", source_image), ("inverted", 255 - source_image)):
+                found, detected = cv2.findChessboardCornersSB(candidate_image, size, flags=flags)
+                if found and detected is not None:
+                    corners = detected
+                    selected_size = size
+                    selected_source = f"{source_name}:{polarity_name}"
+                    selected_image = candidate_image
+                    break
+            if corners is not None:
+                break
+        if corners is not None:
+            break
+    if corners is None or selected_size is None:
+        return None, selected_image, report
     points = corners.reshape(-1, 2).astype(np.float32)
     hull_area = float(cv2.contourArea(cv2.convexHull(points)))
-    report["board_image_area_ratio"] = hull_area / float(enhanced.size)
+    report["found"] = True
+    report["detected_inner_corners"] = list(selected_size)
+    report["detection_source"] = selected_source
+    report["board_image_area_ratio"] = hull_area / float(selected_image.size)
     report["corner_count"] = int(points.shape[0])
-    return points, enhanced, report
+    return points, selected_image, report
 
 
 def draw_checkerboard_detection(
@@ -314,12 +341,10 @@ def board_object_points(inner_corners: tuple[int, int], square_size_mm: float) -
 def solve_geometry(session: Path) -> dict[str, Any]:
     manifest_path = session / "session_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    inner = tuple(int(v) for v in manifest["checkerboard"]["inner_corners"])
     square_mm = float(manifest["checkerboard"]["square_size_mm"])
     pattern = manifest["pattern"]
     projector_width, projector_height = (int(v) for v in pattern["projector_size_px"])
     pattern_manifest = json.loads((session / "patterns" / "pattern_manifest.json").read_text(encoding="utf-8"))
-    object_template = board_object_points(inner, square_mm)
     object_points: list[np.ndarray] = []
     camera_points: list[np.ndarray] = []
     projector_points: list[np.ndarray] = []
@@ -328,6 +353,10 @@ def solve_geometry(session: Path) -> dict[str, Any]:
     for pose in manifest.get("captured_poses", []):
         pose_dir = session / pose["relative_dir"]
         corners = np.load(pose_dir / "checkerboard_corners.npy", allow_pickle=False).astype(np.float32)
+        detected_grid = tuple(
+            int(v) for v in pose["checkerboard_detection"]["detected_inner_corners"]
+        )
+        object_template = board_object_points(detected_grid, square_mm)
         corner_config = manifest.get("projector_corner_estimation", {})
         x_map, valid_x = decode_projector_axis_dense(
             pose_dir / "x",

@@ -134,6 +134,16 @@ class CalibrationCapture:
             period_px=int(projector["fringe_period_px"]),
         )
 
+    def _visible_grid_candidates(self) -> list[tuple[int, int]]:
+        board = self.config["checkerboard"]
+        minimum = [int(v) for v in board["visible_inner_corner_min"]]
+        maximum = [int(v) for v in board["visible_inner_corner_max"]]
+        return [
+            (cols, rows)
+            for cols in range(minimum[0], maximum[0] + 1)
+            for rows in range(minimum[1], maximum[1] + 1)
+        ]
+
     def create_session(self, session: Path) -> None:
         if session.exists() and any(session.iterdir()):
             raise ValueError(f"Session folder is not empty: {session}")
@@ -147,8 +157,17 @@ class CalibrationCapture:
             "standalone": True,
             "production_controller_modified_or_invoked": False,
             "checkerboard": {
-                "inner_corners": [int(value) for value in checkerboard["inner_corners"]],
+                "printed_target_inner_corners": [
+                    int(value) for value in checkerboard["printed_target_inner_corners"]
+                ],
                 "square_size_mm": float(checkerboard["square_size_mm"]),
+                "visible_inner_corner_min": [
+                    int(value) for value in checkerboard["visible_inner_corner_min"]
+                ],
+                "visible_inner_corner_max": [
+                    int(value) for value in checkerboard["visible_inner_corner_max"]
+                ],
+                "visible_grid_candidates": [list(size) for size in self._visible_grid_candidates()],
                 "outer_shape_required": False,
             },
             "pattern": {
@@ -216,10 +235,29 @@ class CalibrationCapture:
             white = self._settle_and_capture(projector, camera, white_pattern)
             cv2.imwrite(str(temporary / "reference_black.png"), black)
             cv2.imwrite(str(temporary / "reference_white.png"), white)
-            inner = tuple(int(v) for v in manifest["checkerboard"]["inner_corners"])
-            corners, detection, report = detect_checkerboard(black, white, inner)
+            board_manifest = manifest["checkerboard"]
+            configured_board = self.config["checkerboard"]
+            candidates = self._visible_grid_candidates()
+            # Migrate sessions created by the earlier full-board detector so the
+            # operator can retry without deleting already captured evidence.
+            board_manifest["printed_target_inner_corners"] = [
+                int(v) for v in configured_board["printed_target_inner_corners"]
+            ]
+            board_manifest["visible_grid_candidates"] = [list(size) for size in candidates]
+            board_manifest["visible_inner_corner_min"] = [
+                int(v) for v in configured_board["visible_inner_corner_min"]
+            ]
+            board_manifest["visible_inner_corner_max"] = [
+                int(v) for v in configured_board["visible_inner_corner_max"]
+            ]
+            board_manifest.pop("inner_corners", None)
+            corners, detection, report = detect_checkerboard(black, white, candidates)
             cv2.imwrite(str(temporary / "checkerboard_response.png"), detection)
-            cv2.imwrite(str(temporary / "checkerboard_detection.png"), draw_checkerboard_detection(white, inner, corners))
+            detected_size = tuple(int(v) for v in report.get("detected_inner_corners", [3, 3]))
+            cv2.imwrite(
+                str(temporary / "checkerboard_detection.png"),
+                draw_checkerboard_detection(white, detected_size, corners),
+            )
             minimum_area = float(self.config["capture"]["minimum_board_area_ratio"])
             if corners is None or float(report.get("board_image_area_ratio", 0.0)) < minimum_area:
                 manifest["rejected_poses"].append(
@@ -365,10 +403,11 @@ class CalibrationApp:
         board = cfg["checkerboard"]
         projector = cfg["projector"]
         info = (
-            f"체커보드: 내부 코너 {board['inner_corners'][0]}×{board['inner_corners'][1]}, "
+            f"인쇄 체커보드: 내부 코너 {board['printed_target_inner_corners'][0]}×"
+            f"{board['printed_target_inner_corners'][1]}, "
             f"실측 칸 {board['square_size_mm']} mm  |  "
             f"프로젝터: {projector['width_px']}×{projector['height_px']}, monitor {projector['monitor_index']}\n"
-            "각 pose 동안 보드를 고정하세요. 완료 후 위치·거리·yaw/pitch/roll을 임의로 바꿔 반복합니다. 이동량 입력은 없습니다."
+            "각 pose에서 보이는 4×4~7×7 내부 코너의 모든 조합을 자동 검출합니다. 촬영 중 고정하고 완료 후 자세를 바꿉니다."
         )
         Label(self.root, text=info, justify=LEFT, anchor="w").pack(fill=X, padx=12, pady=8)
         buttons = Frame(self.root)

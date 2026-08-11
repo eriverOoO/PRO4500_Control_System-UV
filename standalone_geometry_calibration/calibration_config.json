@@ -39,8 +39,10 @@
     "minimum_sine_modulation_u8": 5.0
   },
   "checkerboard": {
-    "inner_corners": [21, 14],
-    "square_size_mm": 12.0
+    "printed_target_inner_corners": [21, 14],
+    "square_size_mm": 12.0,
+    "visible_inner_corner_min": [4, 4],
+    "visible_inner_corner_max": [7, 7]
   },
   "stage_aruco": {
     "dictionary": "DICT_4X4_50",
