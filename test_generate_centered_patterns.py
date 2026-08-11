@@ -36,11 +36,11 @@ def _powershell() -> str:
     return executable
 
 
-def test_generator_keeps_active_width_but_widens_gray_and_sine_period(tmp_path: Path) -> None:
+def test_generator_keeps_active_height_and_horizontal_stripe_period(tmp_path: Path) -> None:
     source = tmp_path / "source"
     output = tmp_path / "output"
     source.mkdir()
-    placeholder = np.zeros((20, 120), dtype=np.uint8)
+    placeholder = np.zeros((48, 120), dtype=np.uint8)
     for name in PATTERN_NAMES:
         assert cv2.imwrite(str(source / name), placeholder)
 
@@ -67,30 +67,30 @@ def test_generator_keeps_active_width_but_widens_gray_and_sine_period(tmp_path: 
 
     white = cv2.imread(str(output / "00_White.bmp"), cv2.IMREAD_GRAYSCALE)
     assert white is not None
-    assert np.all(white[:, :30] == 0)
-    assert np.all(white[:, 30:90] == 255)
-    assert np.all(white[:, 90:] == 0)
+    assert np.all(white[:12, :] == 0)
+    assert np.all(white[12:36, :] == 255)
+    assert np.all(white[36:, :] == 0)
 
     sine = cv2.imread(str(output / "10_Sine_000.bmp"), cv2.IMREAD_GRAYSCALE)
     assert sine is not None
-    np.testing.assert_array_equal(sine[:, 30:42], sine[:, 42:54])
+    np.testing.assert_array_equal(sine[12:24, :], sine[24:36, :])
 
     gray_lsb = cv2.imread(str(output / "09_Gray7.bmp"), cv2.IMREAD_GRAYSCALE)
     gray_lsb_inverse = cv2.imread(str(output / "21_Gray7_inv.bmp"), cv2.IMREAD_GRAYSCALE)
     assert gray_lsb is not None and gray_lsb_inverse is not None
-    assert np.all(gray_lsb[:, 30:42] == 0)
-    assert np.all(gray_lsb[:, 42:54] == 255)
+    assert np.all(gray_lsb[12:24, :] == 0)
+    assert np.all(gray_lsb[24:36, :] == 255)
     np.testing.assert_array_equal(
-        gray_lsb_inverse[:, 30:90],
-        255 - gray_lsb[:, 30:90],
+        gray_lsb_inverse[12:36, :],
+        255 - gray_lsb[12:36, :],
     )
 
     profile = load_pattern_profile(output)
     assert profile is not None
-    assert profile["phase_axis"] == "x"
-    assert profile["active_width_px"] == 60
+    assert profile["phase_axis"] == "y"
+    assert profile["active_height_px"] == 24
     assert profile["stripe_period_px"] == 12
-    assert profile["stripe_cycle_count"] == 5
+    assert profile["stripe_cycle_count"] == 2
 
 
 def test_generator_rejects_a_period_below_twelve_pixels(tmp_path: Path) -> None:

@@ -420,7 +420,7 @@ bool dir_exists(const std::wstring& path) {
     return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-int detect_pattern_scale_percent(const std::wstring& patternDirectory) {
+int detect_pattern_height_percent(const std::wstring& patternDirectory) {
     const std::wstring whitePattern = path_join(patternDirectory, L"00_White.bmp");
     HBITMAP bitmap = static_cast<HBITMAP>(LoadImageW(
         nullptr,
@@ -477,13 +477,13 @@ int detect_pattern_scale_percent(const std::wstring& patternDirectory) {
     DeleteObject(bitmap);
 
     if (maxX < minX || maxY < minY) return -1;
-    const int activeWidth = maxX - minX + 1;
-    const int widthPercent = (activeWidth * 100 + width / 2) / width;
-    return std::clamp(widthPercent, 1, 100);
+    const int activeHeight = maxY - minY + 1;
+    const int heightPercent = (activeHeight * 100 + height / 2) / height;
+    return std::clamp(heightPercent, 1, 100);
 }
 
 void refresh_pattern_scale_display() {
-    const int percent = detect_pattern_scale_percent(get_text(g_app.patterns));
+    const int percent = detect_pattern_height_percent(get_text(g_app.patterns));
     if (percent > 0) {
         set_text(g_app.patternScale, std::to_wstring(percent));
     }
@@ -887,16 +887,16 @@ void apply_pattern_size() {
     } catch (...) {
         MessageBoxW(
             g_app.window,
-            L"Pattern width must be a whole number from 1 to 100.",
-            L"Invalid Pattern Width",
+            L"Pattern height must be a whole number from 1 to 100.",
+            L"Invalid Pattern Height",
             MB_ICONWARNING);
         return;
     }
     if (percent < 1 || percent > 100) {
         MessageBoxW(
             g_app.window,
-            L"Pattern width must be between 1 and 100 percent.",
-            L"Invalid Pattern Width",
+            L"Pattern height must be between 1 and 100 percent.",
+            L"Invalid Pattern Height",
             MB_ICONWARNING);
         return;
     }
@@ -940,9 +940,9 @@ void apply_pattern_size() {
 
     append_log(
         g_app.log,
-        L"\r\n[ui] Rebuilding patterns at " + std::to_wstring(percent)
-            + L"% width x 100% height in " + output + L"\r\n");
-    g_app.patternScaleBeforeUpdate = detect_pattern_scale_percent(output);
+        L"\r\n[ui] Rebuilding patterns at 100% width x "
+            + std::to_wstring(percent) + L"% height in " + output + L"\r\n");
+    g_app.patternScaleBeforeUpdate = detect_pattern_height_percent(output);
     if (!launch_pattern_update_process(command.str())
         && g_app.patternScaleBeforeUpdate > 0) {
         set_text(g_app.patternScale, std::to_wstring(g_app.patternScaleBeforeUpdate));
@@ -1007,9 +1007,9 @@ void build_ui(HWND hwnd) {
         y,
         400,
         24);
-    make_label(hwnd, L"Width (%)", 525, y + 4, 65, 22);
+    make_label(hwnd, L"Height (%)", 525, y + 4, 65, 22);
     const int detectedPatternScale =
-        detect_pattern_scale_percent(defaultPatternDirectory);
+        detect_pattern_height_percent(defaultPatternDirectory);
     const std::wstring initialPatternScale = detectedPatternScale > 0
         ? std::to_wstring(detectedPatternScale)
         : L"100";
@@ -1025,7 +1025,7 @@ void build_ui(HWND hwnd) {
     g_app.applyPatternScale = make_button(
         hwnd,
         IDC_APPLY_PATTERN_SCALE,
-        L"Apply Width",
+        L"Apply Height",
         660,
         y,
         150,

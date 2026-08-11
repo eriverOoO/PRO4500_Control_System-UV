@@ -64,28 +64,27 @@ powershell -ExecutionPolicy Bypass -File .\generate_centered_patterns.ps1
 ```
 
 `StructuredLightControlPanel.exe`에서는 `Patterns`에 출력 폴더를 지정하고
-`Width (%)`에 1~100 사이의 정수를 입력한 뒤 `Apply Width`를 누르면 같은 작업을
+`Height (%)`에 1~100 사이의 정수를 입력한 뒤 `Apply Height`를 누르면 같은 작업을
 GUI에서 실행할 수 있습니다. 예를 들어 `50`은 원본 해상도를 유지하면서 중앙
-가로 50%×세로 100% 영역에만 패턴을 배치하고 가로 바깥을 검정으로 채웁니다. 14~21번 inverse
+가로 100%×세로 50% 영역에만 가로 줄무늬 패턴을 배치하고 위아래를 검정으로 채웁니다. 14~21번 inverse
 패턴도 함께 다시 생성됩니다. 크기를 반복 변경해도 누적 축소되지 않도록 항상
-`generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Width`는 패턴 파일만
+`generated_patterns1/`의 원본에서 다시 생성합니다. `Apply Height`는 패턴 파일만
 변경하며 스캔이나 투사를 시작하지 않습니다. 상태가 `Patterns Updated`로 바뀐
 뒤 `Start Scan` 또는 `Project Only`를 별도로 실행합니다.
 GUI를 시작하거나 `Patterns` 폴더를 변경하면 `00_White.bmp`의 실제 활성 영역을
-읽어 현재 가로 비율을 `Width (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
+읽어 현재 세로 비율을 `Height (%)`에 표시합니다. 크기 변경이 완료된 뒤에도 생성된
 이미지를 다시 확인해 표시값을 즉시 갱신합니다.
 
-Gray 코드와 4-step sine의 최소·기본 주기는 활성 조사 폭과 독립적인 `12 projector px`입니다.
-이전 생성기는 1280 px 원본의 5 px 주기까지 폭과 함께 축소했기 때문에, Width 30%에서는
-실제 주기가 약 1.5 px로 줄었습니다. 새 생성기는 Width 30%의 384 px 조사 영역 안에
-12 px 주기 약 32개를 배치합니다. 따라서 조사 면적은 바꾸지 않고 줄무늬만 넓어집니다.
-GUI에서 Width를 변경해도 12 px 주기는 유지되고 활성 폭에 들어가는 줄무늬 수만 바뀝니다.
+Gray 코드와 4-step sine의 최소·기본 주기는 활성 조사 높이와 독립적인 `12 projector px`입니다.
+가로 줄무늬의 픽셀 높이는 `12 px`로 유지됩니다. 예를 들어 Height 30%에서는 800 px 높이 중
+240 px 조사 영역 안에 12 px 주기 약 20개를 배치합니다. GUI에서 Height를 변경해도 줄무늬의
+픽셀 높이는 유지되고 활성 높이에 들어가는 줄무늬 수만 바뀝니다.
 명령행에서는 `-StripePeriodPixels`로 12 px보다 넓게 바꿀 수 있지만, 주기를 변경한 뒤에는 기존
 reference phase와 높이 보정을 재사용하면 안 됩니다. 생성 조건은 같은 폴더의
 `pattern_profile.json`에 저장되고, 새 촬영의 `scan_log.json`에도 기록됩니다.
 
 Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따라서 새 PC에서
-처음 실행할 때는 `Width (%)` 기본값 `100`으로 `Apply Width`를 한 번 실행해 로컬
+처음 실행할 때는 `Height (%)` 기본값 `100`으로 `Apply Height`를 한 번 실행해 로컬
 투사용 이미지를 만든 뒤, 원하는 가로 비율로 다시 조절하면 됩니다.
 
 ## XIMEA SDK 요구 사항

@@ -18,12 +18,12 @@ using System.Runtime.InteropServices;
 
 public static class CenteredPatternWriter
 {
-    private static byte StructuredLightValue(int patternId, int localX, int periodPixels)
+    private static byte StructuredLightValue(int patternId, int localY, int periodPixels)
     {
         if (patternId == 0) return 255;
         if (patternId == 1) return 0;
 
-        int stripeIndex = localX / periodPixels;
+        int stripeIndex = localY / periodPixels;
         if (patternId >= 2 && patternId <= 9)
         {
             int grayValue = stripeIndex ^ (stripeIndex >> 1);
@@ -34,7 +34,7 @@ public static class CenteredPatternWriter
         if (patternId >= 10 && patternId <= 13)
         {
             double phaseShift = (patternId - 10) * Math.PI / 2.0;
-            double phase = 2.0 * Math.PI * localX / periodPixels + phaseShift;
+            double phase = 2.0 * Math.PI * localY / periodPixels + phaseShift;
             return (byte)Math.Round(
                 127.5 * (1.0 + Math.Cos(phase)),
                 MidpointRounding.AwayFromZero);
@@ -61,20 +61,20 @@ public static class CenteredPatternWriter
             }
             output.Palette = palette;
 
-            int activeWidth = Math.Max(
+            int activeWidth = source.Width;
+            int activeHeight = Math.Max(
                 1,
-                (int)Math.Round(source.Width * scale, MidpointRounding.AwayFromZero));
-            int cycleCount = (activeWidth + stripePeriodPixels - 1) / stripePeriodPixels;
+                (int)Math.Round(source.Height * scale, MidpointRounding.AwayFromZero));
+            int cycleCount = (activeHeight + stripePeriodPixels - 1) / stripePeriodPixels;
             if (cycleCount > 256)
             {
                 throw new ArgumentOutOfRangeException(
                     "stripePeriodPixels",
-                    "The active width may contain at most 256 Gray-code cycles.");
+                    "The active height may contain at most 256 Gray-code cycles.");
             }
-            // The UI scale controls projected width only.  Preserve the full
-            // source height so a 70% setting produces a 70% x 100% pattern.
-            int activeHeight = source.Height;
-            int offsetX = (source.Width - activeWidth) / 2;
+            // The UI scale controls projected height only. Preserve the full
+            // source width so a 70% setting produces a 100% x 70% pattern.
+            int offsetX = 0;
             int offsetY = (source.Height - activeHeight) / 2;
 
             var bounds = new Rectangle(0, 0, output.Width, output.Height);
@@ -95,23 +95,20 @@ public static class CenteredPatternWriter
                             source.Height - 1,
                             (y - offsetY) * source.Height / activeHeight);
 
+                        int localY = y - offsetY;
                         for (int x = offsetX; x < offsetX + activeWidth; x++)
                         {
-                            int localX = x - offsetX;
                             int gray;
                             if (patternId >= 0 && patternId <= 13)
                             {
                                 gray = StructuredLightValue(
                                     patternId,
-                                    localX,
+                                    localY,
                                     stripePeriodPixels);
                             }
                             else
                             {
-                                int sourceX = Math.Min(
-                                    source.Width - 1,
-                                    localX * source.Width / activeWidth);
-                                Color color = source.GetPixel(sourceX, sourceY);
+                                Color color = source.GetPixel(x, sourceY);
                                 gray = (
                                     299 * color.R +
                                     587 * color.G +
@@ -224,21 +221,21 @@ for ($grayIndex = 0; $grayIndex -lt $inverseLabels.Count; $grayIndex++) {
 
 $profileImage = [System.Drawing.Image]::FromFile($sourceFiles[0].FullName)
 try {
-    $activeWidthPixels = [Math]::Max(
+    $activeHeightPixels = [Math]::Max(
         1,
         [int][Math]::Round(
-            $profileImage.Width * $Scale,
+            $profileImage.Height * $Scale,
             [MidpointRounding]::AwayFromZero))
     $profile = [ordered]@{
         schema_version = 1
-        phase_axis = "x"
+        phase_axis = "y"
         image_width_px = $profileImage.Width
         image_height_px = $profileImage.Height
-        active_width_fraction = $Scale
-        active_width_px = $activeWidthPixels
+        active_height_fraction = $Scale
+        active_height_px = $activeHeightPixels
         stripe_period_px = $StripePeriodPixels
         stripe_cycle_count = [int][Math]::Ceiling(
-            $activeWidthPixels / [double]$StripePeriodPixels)
+            $activeHeightPixels / [double]$StripePeriodPixels)
         gray_bits = 8
         pattern_ids = @(0..21)
     }
@@ -255,7 +252,7 @@ finally {
 }
 
 Write-Host (
-    "[ok] Centered patterns use {0:P0} width, 100% height, and a {1}px stripe period: {2}" -f
+    "[ok] Centered patterns use 100% width, {0:P0} height, and a {1}px stripe period: {2}" -f
         $Scale,
         $StripePeriodPixels,
         $outputPath)
