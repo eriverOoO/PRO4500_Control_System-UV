@@ -142,6 +142,21 @@ def detect_checkerboard(
     return points, selected_image, report
 
 
+def checkerboard_grid_candidates(
+    minimum: tuple[int, int],
+    maximum: tuple[int, int],
+    minimum_corner_count: int = 12,
+) -> list[tuple[int, int]]:
+    """Return supported partial grids, largest first, excluding underconstrained grids."""
+    candidates = [
+        (cols, rows)
+        for cols in range(int(minimum[0]), int(maximum[0]) + 1)
+        for rows in range(int(minimum[1]), int(maximum[1]) + 1)
+        if cols * rows >= int(minimum_corner_count)
+    ]
+    return sorted(candidates, key=lambda size: size[0] * size[1], reverse=True)
+
+
 def draw_checkerboard_detection(
     image: np.ndarray,
     inner_corners: tuple[int, int],
@@ -338,6 +353,126 @@ def board_object_points(inner_corners: tuple[int, int], square_size_mm: float) -
     return points
 
 
+def strict_checkerboard_correspondence_mask(
+    camera_corners: np.ndarray,
+    projector_corners: np.ndarray,
+    decoded_mask: np.ndarray,
+    inner_corners: tuple[int, int],
+    projector_size: tuple[int, int],
+    *,
+    max_camera_grid_residual_px: float = 5.0,
+    max_projector_grid_residual_px: float = 8.0,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Reject decoded points that do not form the same planar checkerboard grid."""
+    cols, rows = (int(v) for v in inner_corners)
+    camera = np.asarray(camera_corners, dtype=np.float32).reshape(-1, 2)
+    projector = np.asarray(projector_corners, dtype=np.float32).reshape(-1, 2)
+    decoded = np.asarray(decoded_mask, dtype=bool).reshape(-1)
+    expected = cols * rows
+    if camera.shape[0] != expected or projector.shape[0] != expected or decoded.size != expected:
+        raise ValueError("Checkerboard correspondence count does not match detected grid")
+    projector_width, projector_height = (int(v) for v in projector_size)
+    finite = np.all(np.isfinite(camera), axis=1) & np.all(np.isfinite(projector), axis=1)
+    in_bounds = (
+        (projector[:, 0] >= 0)
+        & (projector[:, 0] < projector_width)
+        & (projector[:, 1] >= 0)
+        & (projector[:, 1] < projector_height)
+    )
+    initial = decoded & finite & in_bounds
+    accepted = np.zeros(expected, dtype=bool)
+    report: dict[str, Any] = {
+        "decoded_corner_count": int(np.count_nonzero(decoded)),
+        "projector_in_bounds_count": int(np.count_nonzero(initial)),
+        "strict_corner_count": 0,
+        "camera_grid_residual_limit_px": float(max_camera_grid_residual_px),
+        "projector_grid_residual_limit_px": float(max_projector_grid_residual_px),
+    }
+    if np.count_nonzero(initial) < 4:
+        return accepted, report
+    ideal = np.array([(x, y) for y in range(rows) for x in range(cols)], dtype=np.float32)
+    camera_h, _ = cv2.findHomography(
+        ideal[initial], camera[initial], cv2.RANSAC, float(max_camera_grid_residual_px)
+    )
+    projector_h, _ = cv2.findHomography(
+        ideal[initial], projector[initial], cv2.RANSAC, float(max_projector_grid_residual_px)
+    )
+    if camera_h is None or projector_h is None:
+        return accepted, report
+    camera_fit = cv2.perspectiveTransform(ideal[:, None, :], camera_h).reshape(-1, 2)
+    projector_fit = cv2.perspectiveTransform(ideal[:, None, :], projector_h).reshape(-1, 2)
+    camera_residual = np.linalg.norm(camera - camera_fit, axis=1)
+    projector_residual = np.linalg.norm(projector - projector_fit, axis=1)
+    accepted = (
+        initial
+        & (camera_residual <= float(max_camera_grid_residual_px))
+        & (projector_residual <= float(max_projector_grid_residual_px))
+    )
+    report.update(
+        {
+            "strict_corner_count": int(np.count_nonzero(accepted)),
+            "rejected_grid_outlier_count": int(np.count_nonzero(initial & ~accepted)),
+            "camera_grid_residual_max_accepted_px": (
+                float(np.max(camera_residual[accepted])) if np.any(accepted) else None
+            ),
+            "projector_grid_residual_max_accepted_px": (
+                float(np.max(projector_residual[accepted])) if np.any(accepted) else None
+            ),
+        }
+    )
+    return accepted, report
+
+
+def checkerboard_motion_rms(
+    initial_corners: np.ndarray, final_corners: np.ndarray
+) -> tuple[float, str]:
+    """Measure pose motion while allowing OpenCV's possible 180-degree ordering flip."""
+    initial = np.asarray(initial_corners, dtype=np.float32).reshape(-1, 2)
+    final = np.asarray(final_corners, dtype=np.float32).reshape(-1, 2)
+    if initial.shape != final.shape or initial.size == 0:
+        raise ValueError("Initial/final checkerboard corner counts do not match")
+    direct = float(np.sqrt(np.mean(np.sum((initial - final) ** 2, axis=1))))
+    reversed_order = float(
+        np.sqrt(np.mean(np.sum((initial - final[::-1]) ** 2, axis=1)))
+    )
+    if direct <= reversed_order:
+        return direct, "direct"
+    return reversed_order, "reversed"
+
+
+def estimate_image_motion_rms(
+    initial_image: np.ndarray, final_image: np.ndarray
+) -> tuple[float | None, float | None]:
+    """Estimate board motion from equal white-pattern frames when grid size changes."""
+    initial = _gray_u8(initial_image).astype(np.float32) / 255.0
+    final = _gray_u8(final_image).astype(np.float32) / 255.0
+    if initial.shape != final.shape:
+        return None, None
+    initial = cv2.GaussianBlur(initial, (5, 5), 0)
+    final = cv2.GaussianBlur(final, (5, 5), 0)
+    warp = np.eye(2, 3, dtype=np.float32)
+    try:
+        score, warp = cv2.findTransformECC(
+            initial,
+            final,
+            warp,
+            cv2.MOTION_EUCLIDEAN,
+            (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-6),
+            None,
+            5,
+        )
+    except cv2.error:
+        return None, None
+    height, width = initial.shape
+    sample = np.array(
+        [[0.0, 0.0], [width - 1.0, 0.0], [0.0, height - 1.0], [width - 1.0, height - 1.0]],
+        dtype=np.float32,
+    )
+    transformed = cv2.transform(sample.reshape(-1, 1, 2), warp).reshape(-1, 2)
+    rms = float(np.sqrt(np.mean(np.sum((sample - transformed) ** 2, axis=1))))
+    return rms, float(score)
+
+
 def solve_geometry(session: Path) -> dict[str, Any]:
     manifest_path = session / "session_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -382,8 +517,31 @@ def solve_geometry(session: Path) -> dict[str, Any]:
             patch_size_px=int(corner_config.get("local_patch_size_px", 47)),
             minimum_valid_pixels=int(corner_config.get("minimum_valid_pixels", 24)),
         )
-        if np.count_nonzero(valid) < 12:
-            pose_reports.append({"pose_id": pose["pose_id"], "used": False, "reason": "too few decoded corners"})
+        minimum_decoded_corners = int(
+            manifest["checkerboard"].get("minimum_visible_corner_count", 12)
+        )
+        valid, strict_report = strict_checkerboard_correspondence_mask(
+            corners,
+            projector_corners,
+            valid,
+            detected_grid,
+            (projector_width, projector_height),
+            max_camera_grid_residual_px=float(
+                corner_config.get("strict_camera_grid_residual_px", 5.0)
+            ),
+            max_projector_grid_residual_px=float(
+                corner_config.get("strict_projector_grid_residual_px", 8.0)
+            ),
+        )
+        if np.count_nonzero(valid) < minimum_decoded_corners:
+            pose_reports.append(
+                {
+                    "pose_id": pose["pose_id"],
+                    "used": False,
+                    "reason": "too few strict checkerboard/projector correspondences",
+                    "strict_validation": strict_report,
+                }
+            )
             continue
         camera_image = cv2.imread(str(pose_dir / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
         if camera_image is None:
@@ -397,6 +555,7 @@ def solve_geometry(session: Path) -> dict[str, Any]:
                 "pose_id": pose["pose_id"],
                 "used": True,
                 "decoded_corner_count": int(np.count_nonzero(valid)),
+                "strict_validation": strict_report,
                 "projector_corner_method": (
                     f"{int(corner_config.get('local_patch_size_px', 47))}px_"
                     "local_homography_on_uv_valid_pixels"
@@ -406,9 +565,21 @@ def solve_geometry(session: Path) -> dict[str, Any]:
         )
     quality_limits = manifest.get("calibration_quality", {})
     minimum_poses = int(quality_limits.get("minimum_accepted_poses", 8))
+    diagnostic = {
+        "captured_pose_count": len(manifest.get("captured_poses", [])),
+        "accepted_pose_count": len(object_points),
+        "minimum_accepted_poses": minimum_poses,
+        "pose_reports": pose_reports,
+    }
+    (session / "geometry_calibration_diagnostics.json").write_text(
+        json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     if camera_size is None or len(object_points) < minimum_poses:
         raise ValueError(
-            f"At least {minimum_poses} accepted checkerboard poses are required; "
+            f"Only {len(object_points)} of {len(manifest.get('captured_poses', []))} captured poses "
+            f"passed the strict checkerboard/projector correspondence test. "
+            f"At least {minimum_poses} accepted "
+            "checkerboard poses are required; see geometry_calibration_diagnostics.json. "
             "10-16 diverse poses are recommended"
         )
     camera_rms, camera_k, camera_dist, _rvecs, _tvecs = cv2.calibrateCamera(

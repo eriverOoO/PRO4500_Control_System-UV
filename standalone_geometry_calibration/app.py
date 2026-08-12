@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -25,11 +26,17 @@ if str(WORKSPACE) not in sys.path:
 from camera_provider import CameraInterface, CameraProvider  # noqa: E402
 from calibration_core import (  # noqa: E402
     PatternProfile,
+    checkerboard_grid_candidates,
+    estimate_image_motion_rms,
+    checkerboard_motion_rms,
+    decode_projector_axis_dense,
     detect_checkerboard,
     draw_checkerboard_detection,
+    estimate_projector_corners_from_local_homographies,
     estimate_stage_plane_from_aruco,
     generate_patterns,
     solve_geometry,
+    strict_checkerboard_correspondence_mask,
 )
 
 
@@ -136,13 +143,13 @@ class CalibrationCapture:
 
     def _visible_grid_candidates(self) -> list[tuple[int, int]]:
         board = self.config["checkerboard"]
-        minimum = [int(v) for v in board["visible_inner_corner_min"]]
-        maximum = [int(v) for v in board["visible_inner_corner_max"]]
-        return [
-            (cols, rows)
-            for cols in range(minimum[0], maximum[0] + 1)
-            for rows in range(minimum[1], maximum[1] + 1)
-        ]
+        minimum = tuple(int(v) for v in board["visible_inner_corner_min"])
+        maximum = tuple(int(v) for v in board["visible_inner_corner_max"])
+        return checkerboard_grid_candidates(
+            minimum,
+            maximum,
+            int(board.get("minimum_visible_corner_count", 12)),
+        )
 
     def create_session(self, session: Path) -> None:
         if session.exists() and any(session.iterdir()):
@@ -167,6 +174,9 @@ class CalibrationCapture:
                 "visible_inner_corner_max": [
                     int(value) for value in checkerboard["visible_inner_corner_max"]
                 ],
+                "minimum_visible_corner_count": int(
+                    checkerboard.get("minimum_visible_corner_count", 12)
+                ),
                 "visible_grid_candidates": [list(size) for size in self._visible_grid_candidates()],
                 "outer_shape_required": False,
             },
@@ -215,7 +225,17 @@ class CalibrationCapture:
     def capture_next_pose(self, session: Path) -> None:
         manifest_path = session / "session_manifest.json"
         manifest = read_json(manifest_path)
-        next_number = len(manifest["captured_poses"]) + len(manifest["rejected_poses"]) + 1
+        if manifest.get("rejected_poses"):
+            manifest["rejected_poses"] = []
+            write_json(manifest_path, manifest)
+        existing_numbers: list[int] = []
+        for parent in (session / "poses", session / "rejected"):
+            for path in parent.glob("pose_*"):
+                try:
+                    existing_numbers.append(int(path.name.removeprefix("pose_")))
+                except ValueError:
+                    continue
+        next_number = max(existing_numbers, default=0) + 1
         pose_id = f"pose_{next_number:03d}"
         temporary = session / "rejected" / pose_id
         temporary.mkdir(parents=True, exist_ok=False)
@@ -250,6 +270,9 @@ class CalibrationCapture:
             board_manifest["visible_inner_corner_max"] = [
                 int(v) for v in configured_board["visible_inner_corner_max"]
             ]
+            board_manifest["minimum_visible_corner_count"] = int(
+                configured_board.get("minimum_visible_corner_count", 12)
+            )
             board_manifest.pop("inner_corners", None)
             corners, detection, report = detect_checkerboard(black, white, candidates)
             cv2.imwrite(str(temporary / "checkerboard_response.png"), detection)
@@ -260,10 +283,6 @@ class CalibrationCapture:
             )
             minimum_area = float(self.config["capture"]["minimum_board_area_ratio"])
             if corners is None or float(report.get("board_image_area_ratio", 0.0)) < minimum_area:
-                manifest["rejected_poses"].append(
-                    {"pose_id": pose_id, "captured_at": datetime.now().isoformat(timespec="seconds"), "report": report}
-                )
-                write_json(manifest_path, manifest)
                 raise ValueError(
                     "체커보드 검출 실패 또는 화면에서 너무 작습니다. "
                     f"검출={report['found']}, 영역비={report.get('board_image_area_ratio', 0.0):.3%}. 자세를 바꿔 재촬영하세요."
@@ -284,6 +303,105 @@ class CalibrationCapture:
                     if not cv2.imwrite(str(axis_output / entry["file"]), frame):
                         raise RuntimeError(f"Could not save captured pattern: {entry['file']}")
                     self.log(f"{pose_id}: {axis.upper()} {index}/{len(sequence)}")
+            self.log(f"{pose_id}: 촬영 중 보정판 움직임 확인")
+            final_white = self._settle_and_capture(projector, camera, white_pattern)
+            cv2.imwrite(str(temporary / "reference_white_final.png"), final_white)
+            final_corners, final_detection, final_report = detect_checkerboard(
+                black, final_white, candidates
+            )
+            cv2.imwrite(str(temporary / "checkerboard_response_final.png"), final_detection)
+            cv2.imwrite(
+                str(temporary / "checkerboard_detection_final.png"),
+                draw_checkerboard_detection(
+                    final_white,
+                    tuple(int(v) for v in final_report.get("detected_inner_corners", detected_size)),
+                    final_corners,
+                ),
+            )
+            motion_limit_px = float(
+                self.config["capture"].get("maximum_pose_motion_rms_px", 2.0)
+            )
+            final_size = tuple(int(v) for v in final_report.get("detected_inner_corners", []))
+            if final_corners is not None and final_size == detected_size:
+                motion_rms_px, motion_order = checkerboard_motion_rms(corners, final_corners)
+                motion_method = "checkerboard_corners"
+                motion_score: float | None = None
+            else:
+                motion_rms_px, motion_score = estimate_image_motion_rms(white, final_white)
+                motion_order = "not_applicable"
+                motion_method = "white_frame_ecc" if motion_rms_px is not None else "unverified"
+            report["capture_motion_validation"] = {
+                "rms_px": motion_rms_px,
+                "limit_px": motion_limit_px,
+                "corner_order": motion_order,
+                "method": motion_method,
+                "ecc_score": motion_score,
+                "final_detection": final_report,
+            }
+            if motion_rms_px is not None and motion_rms_px > motion_limit_px:
+                raise ValueError(
+                    f"{pose_id} 패턴 촬영 중 보정판이 움직였습니다: "
+                    f"코너 이동 RMS {motion_rms_px:.2f}px(허용 {motion_limit_px:.2f}px). "
+                    "고정한 뒤 다시 촬영하세요. 저장하지 않습니다."
+                )
+            if motion_rms_px is None:
+                self.log(f"{pose_id}: 종료 프레임 격자 검증 불가; 엄격 대응점 검사로 계속 확인합니다.")
+            corner_config = manifest.get("projector_corner_estimation", {})
+            decoded_axes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+            for axis, projector_extent in (
+                ("x", int(manifest["pattern"]["projector_size_px"][0])),
+                ("y", int(manifest["pattern"]["projector_size_px"][1])),
+            ):
+                decoded_axes[axis] = decode_projector_axis_dense(
+                    temporary / axis,
+                    pattern_manifest["axes"][axis],
+                    int(manifest["pattern"]["period_px"]),
+                    projector_extent,
+                    minimum_gray_contrast=float(
+                        corner_config.get("minimum_gray_pair_contrast_u8", 5.0)
+                    ),
+                    minimum_modulation=float(
+                        corner_config.get("minimum_sine_modulation_u8", 5.0)
+                    ),
+                )
+            projector_corners, decoded_corner_mask, _corner_reports = (
+                estimate_projector_corners_from_local_homographies(
+                    corners,
+                    decoded_axes["x"][0],
+                    decoded_axes["y"][0],
+                    decoded_axes["x"][1] & decoded_axes["y"][1],
+                    patch_size_px=int(corner_config.get("local_patch_size_px", 47)),
+                    minimum_valid_pixels=int(corner_config.get("minimum_valid_pixels", 24)),
+                )
+            )
+            decoded_corner_count = int(np.count_nonzero(decoded_corner_mask))
+            strict_mask, strict_report = strict_checkerboard_correspondence_mask(
+                corners,
+                projector_corners,
+                decoded_corner_mask,
+                detected_size,
+                tuple(int(v) for v in manifest["pattern"]["projector_size_px"]),
+                max_camera_grid_residual_px=float(
+                    corner_config.get("strict_camera_grid_residual_px", 5.0)
+                ),
+                max_projector_grid_residual_px=float(
+                    corner_config.get("strict_projector_grid_residual_px", 8.0)
+                ),
+            )
+            strict_corner_count = int(np.count_nonzero(strict_mask))
+            report["decoded_projector_corner_count"] = decoded_corner_count
+            report["strict_validation"] = strict_report
+            minimum_decoded_corners = int(
+                configured_board.get("minimum_visible_corner_count", 12)
+            )
+            if strict_corner_count < minimum_decoded_corners:
+                raise ValueError(
+                    f"{pose_id} 촬영은 완료됐지만 엄격한 기하보정 검사에서 거부되었습니다: "
+                    f"해독 {decoded_corner_count}개 중 정상 대응점 {strict_corner_count}개"
+                    f"(최소 {minimum_decoded_corners}개). "
+                    "판을 완전히 고정하고 위치나 각도를 바꿔 다시 촬영하세요."
+                )
+            np.save(temporary / "strict_correspondence_mask.npy", strict_mask)
             accepted = session / "poses" / pose_id
             temporary.replace(accepted)
             relative = accepted.relative_to(session).as_posix()
@@ -297,7 +415,15 @@ class CalibrationCapture:
                 }
             )
             write_json(manifest_path, manifest)
-            self.log(f"{pose_id}: 저장 완료. 이제 체커보드 자세를 바꾼 뒤 다시 촬영하세요.")
+            self.log(
+                f"{pose_id}: 기하보정용 pose 승인 및 저장 완료 "
+                f"(엄격 검사 정상 대응점 {strict_corner_count}개). "
+                "자세를 바꾼 뒤 다시 촬영하세요."
+            )
+        except Exception:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            raise
         finally:
             if projector is not None:
                 projector.show(np.zeros((self.profile.height, self.profile.width), dtype=np.uint8))

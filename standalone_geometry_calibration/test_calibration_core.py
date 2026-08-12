@@ -7,11 +7,54 @@ import numpy as np
 
 from standalone_geometry_calibration.calibration_core import (
     PatternProfile,
+    checkerboard_grid_candidates,
+    checkerboard_motion_rms,
+    estimate_image_motion_rms,
     decode_projector_axis,
     estimate_projector_corners_from_local_homographies,
     generate_patterns,
     gray_to_binary,
+    strict_checkerboard_correspondence_mask,
 )
+
+
+def test_partial_grid_candidates_include_3x4_but_exclude_3x3() -> None:
+    candidates = checkerboard_grid_candidates((3, 3), (7, 7), minimum_corner_count=12)
+    assert (3, 4) in candidates
+    assert (4, 3) in candidates
+    assert (3, 3) not in candidates
+    assert all(cols * rows >= 12 for cols, rows in candidates)
+
+
+def test_strict_checkerboard_correspondence_rejects_grid_outliers() -> None:
+    ideal = np.array([(x, y) for y in range(4) for x in range(4)], dtype=np.float32)
+    camera = ideal * 100.0 + np.array([200.0, 300.0], dtype=np.float32)
+    projector = ideal * 40.0 + np.array([50.0, 60.0], dtype=np.float32)
+    camera[0] += [60.0, -40.0]
+    projector[1] += [30.0, 30.0]
+    mask, report = strict_checkerboard_correspondence_mask(
+        camera, projector, np.ones(16, dtype=bool), (4, 4), (1280, 800)
+    )
+    assert not mask[0]
+    assert not mask[1]
+    assert np.count_nonzero(mask) == 14
+    assert report["strict_corner_count"] == 14
+
+
+def test_checkerboard_motion_rms_accepts_reversed_corner_order() -> None:
+    corners = np.array([(x, y) for y in range(4) for x in range(4)], dtype=np.float32)
+    rms, order = checkerboard_motion_rms(corners, corners[::-1])
+    assert rms == 0.0
+    assert order == "reversed"
+
+
+def test_image_motion_estimation_detects_translation() -> None:
+    image = np.zeros((160, 200), dtype=np.uint8)
+    cv2.rectangle(image, (40, 30), (160, 130), 255, -1)
+    shifted = cv2.warpAffine(image, np.float32([[1, 0, 3], [0, 1, -4]]), (200, 160))
+    rms, score = estimate_image_motion_rms(image, shifted)
+    assert rms is not None and score is not None
+    assert 4.0 <= rms <= 6.0
 
 
 def test_gray_to_binary_round_trip() -> None:

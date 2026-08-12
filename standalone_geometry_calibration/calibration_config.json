@@ -24,7 +24,8 @@
   "capture": {
     "flush_frames_after_pattern": 2,
     "minimum_board_area_ratio": 0.01,
-    "recommended_pose_count": 12
+    "recommended_pose_count": 12,
+    "maximum_pose_motion_rms_px": 2.0
   },
   "calibration_quality": {
     "minimum_accepted_poses": 8,
@@ -36,13 +37,16 @@
     "local_patch_size_px": 47,
     "minimum_valid_pixels": 24,
     "minimum_gray_pair_contrast_u8": 5.0,
-    "minimum_sine_modulation_u8": 5.0
+    "minimum_sine_modulation_u8": 5.0,
+    "strict_camera_grid_residual_px": 5.0,
+    "strict_projector_grid_residual_px": 8.0
   },
   "checkerboard": {
     "printed_target_inner_corners": [21, 14],
     "square_size_mm": 12.0,
-    "visible_inner_corner_min": [4, 4],
-    "visible_inner_corner_max": [7, 7]
+    "visible_inner_corner_min": [3, 3],
+    "visible_inner_corner_max": [7, 7],
+    "minimum_visible_corner_count": 12
   },
   "stage_aruco": {
     "dictionary": "DICT_4X4_50",
