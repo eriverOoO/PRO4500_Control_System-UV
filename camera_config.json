@@ -54,6 +54,12 @@
       "dark_threshold": 5,
       "black_offset": 0.0
     },
+    "frame_guard": {
+      "enabled": true,
+      "min_illuminated_ratio": 0.005,
+      "min_pattern_change_ratio": 0.05,
+      "min_signal_delta_u8": 20.0
+    },
     "quality_gate": {
       "enabled": true,
       "enforcement": "record_only",

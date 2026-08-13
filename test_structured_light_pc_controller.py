@@ -5,6 +5,7 @@ import numpy as np
 
 from structured_light_pc_controller import (
     ExposureBracket,
+    FrameGuardConfig,
     HdrConfig,
     QualityGateConfig,
     aruco_stage_geometry,
@@ -14,6 +15,7 @@ from structured_light_pc_controller import (
     load_capture_config,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
+    validate_projected_frame,
 )
 
 
@@ -28,6 +30,58 @@ def _quality_gate() -> QualityGateConfig:
         max_decoder_saturation_ratio=0.2,
         max_decoder_dark_ratio=0.8,
     )
+
+
+def _frame_guard() -> FrameGuardConfig:
+    return FrameGuardConfig(
+        enabled=True,
+        min_illuminated_ratio=0.05,
+        min_pattern_change_ratio=0.05,
+        min_signal_delta_u8=20.0,
+    )
+
+
+def _single_hdr() -> HdrConfig:
+    return HdrConfig(False, 8, 250, 5, 0.0, 235, (ExposureBracket("single", 15000),))
+
+
+def test_frame_guard_discards_blank_white_and_stale_black() -> None:
+    guard = _frame_guard()
+    hdr = _single_hdr()
+    blank = np.zeros((8, 8), dtype=np.uint8)
+    white = np.full((8, 8), 120, dtype=np.uint8)
+
+    rejected_white = validate_projected_frame(
+        cv2, frame=blank, projected=white, pattern_id=0, hdr=hdr, guard=guard, white_reference=None, black_reference=None
+    )
+    rejected_black = validate_projected_frame(
+        cv2, frame=white, projected=blank, pattern_id=1, hdr=hdr, guard=guard, white_reference=white, black_reference=None
+    )
+
+    assert rejected_white["passed"] is False
+    assert rejected_white["reason"] == "white_frame_too_dark"
+    assert rejected_black["passed"] is False
+    assert rejected_black["reason"] == "black_frame_matches_white"
+
+
+def test_frame_guard_discards_blank_pattern_after_white_black_references() -> None:
+    guard = _frame_guard()
+    hdr = _single_hdr()
+    white = np.full((8, 8), 120, dtype=np.uint8)
+    black = np.zeros((8, 8), dtype=np.uint8)
+    pattern = np.zeros((8, 8), dtype=np.uint8)
+    pattern[:, :4] = 100
+
+    rejected = validate_projected_frame(
+        cv2, frame=black, projected=pattern, pattern_id=2, hdr=hdr, guard=guard, white_reference=white, black_reference=black
+    )
+    accepted = validate_projected_frame(
+        cv2, frame=pattern, projected=pattern, pattern_id=2, hdr=hdr, guard=guard, white_reference=white, black_reference=black
+    )
+
+    assert rejected["passed"] is False
+    assert rejected["reason"] == "projector_blank_or_black_frame"
+    assert accepted["passed"] is True
 
 
 def _sequence_frames(white: int, black: int, on: int, off: int) -> dict[int, tuple[list[np.ndarray], list[float]]]:

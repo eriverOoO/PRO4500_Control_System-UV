@@ -144,6 +144,7 @@ class CaptureConfig:
     hdr: HdrConfig
     rig: RigMetadata
     quality_gate: "QualityGateConfig"
+    frame_guard: "FrameGuardConfig"
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,16 @@ class QualityGateConfig:
     sine_min_valid_ratio: float
     max_decoder_saturation_ratio: float
     max_decoder_dark_ratio: float
+
+
+@dataclass(frozen=True)
+class FrameGuardConfig:
+    """Reject a candidate frame that looks like projector blanking before saving it."""
+
+    enabled: bool
+    min_illuminated_ratio: float
+    min_pattern_change_ratio: float
+    min_signal_delta_u8: float
 
 
 def now_ms() -> int:
@@ -393,10 +404,13 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     capture_section = config.get("capture", {})
     single_section = capture_section.get("single_exposure", {})
     quality_section = capture_section.get("quality_gate", {})
+    frame_guard_section = capture_section.get("frame_guard", {})
     metadata_section = capture_section.get("metadata", {})
     quality_enforcement = str(quality_section.get("enforcement", "record_only")).strip().lower()
     if quality_enforcement not in ("record_only", "block"):
         raise ValueError("capture.quality_gate.enforcement must be 'record_only' or 'block'")
+    if not isinstance(frame_guard_section, dict):
+        raise ValueError("capture.frame_guard must be an object")
 
     if "hdr" in capture_section:
         raise SystemExit("capture.hdr is no longer supported; use capture.single_exposure")
@@ -467,6 +481,12 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             sine_min_valid_ratio=float(quality_section.get("sine_min_valid_ratio", 0.05)),
             max_decoder_saturation_ratio=float(quality_section.get("max_decoder_saturation_ratio", 0.20)),
             max_decoder_dark_ratio=float(quality_section.get("max_decoder_dark_ratio", 0.80)),
+        ),
+        frame_guard=FrameGuardConfig(
+            enabled=parse_bool(frame_guard_section.get("enabled"), True),
+            min_illuminated_ratio=float(frame_guard_section.get("min_illuminated_ratio", 0.005)),
+            min_pattern_change_ratio=float(frame_guard_section.get("min_pattern_change_ratio", 0.05)),
+            min_signal_delta_u8=float(frame_guard_section.get("min_signal_delta_u8", 20.0)),
         ),
     )
 
@@ -884,6 +904,9 @@ def append_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "capture_command_timestamp_pc_ms",
         "camera_timestamp_ms",
         "camera_frame_index",
+        "frame_guard_status",
+        "frame_guard_reason",
+        "frame_guard_metrics",
         "received_image_filename",
         "final_filename",
         "saturated_mask_filename",
@@ -1691,6 +1714,89 @@ def decoder_channel_stats(cv2, image: Any, hdr: HdrConfig) -> dict[str, float | 
     }
 
 
+def validate_projected_frame(
+    cv2,
+    *,
+    frame: Any,
+    projected: Any,
+    pattern_id: int,
+    hdr: HdrConfig,
+    guard: FrameGuardConfig,
+    white_reference: Any | None,
+    black_reference: Any | None,
+) -> dict[str, Any]:
+    """Reject blanked projector captures without ever writing the candidate image.
+
+    Pattern 0 establishes the illuminated area and pattern 1 establishes the
+    dark baseline.  Every remaining structured-light image must differ from
+    that baseline across part of the illuminated area.  This deliberately does
+    not try to validate the exact Gray/FPP geometry here; the sequence quality
+    gate performs that later.
+    """
+    import numpy as np  # type: ignore
+
+    candidate = to_decoder_u8(to_grayscale(cv2, frame)).astype(np.float32)
+    if not guard.enabled:
+        return {"passed": True, "reason": "disabled"}
+
+    dark_limit = float(hdr.dark_threshold)
+    if pattern_id == 0:
+        illuminated_ratio = float(np.mean(candidate > dark_limit))
+        passed = illuminated_ratio >= guard.min_illuminated_ratio
+        return {
+            "passed": passed,
+            "reason": "white_frame_too_dark" if not passed else "white_reference_ready",
+            "illuminated_ratio": illuminated_ratio,
+            "min_illuminated_ratio": guard.min_illuminated_ratio,
+        }
+
+    if pattern_id == 1:
+        if white_reference is None:
+            return {"passed": True, "reason": "black_reference_ready_without_white"}
+        white = to_decoder_u8(to_grayscale(cv2, white_reference)).astype(np.float32)
+        active = white > dark_limit
+        if not np.any(active):
+            return {"passed": False, "reason": "white_reference_has_no_illuminated_area"}
+        black_change_ratio = float(
+            np.mean(np.abs(white[active] - candidate[active]) >= guard.min_signal_delta_u8)
+        )
+        passed = black_change_ratio >= guard.min_pattern_change_ratio
+        return {
+            "passed": passed,
+            "reason": "black_frame_matches_white" if not passed else "black_reference_ready",
+            "black_change_ratio": black_change_ratio,
+            "min_pattern_change_ratio": guard.min_pattern_change_ratio,
+        }
+
+    expected = to_decoder_u8(to_grayscale(cv2, projected)).astype(np.float32)
+    expected_illuminated_ratio = float(np.mean(expected > dark_limit))
+    if expected_illuminated_ratio < guard.min_illuminated_ratio:
+        # Some Gray-code bit planes are intentionally black.  A black camera
+        # image cannot be distinguished from a valid all-black projection
+        # without hardware feedback, so preserve it and let its inverse pair
+        # be evaluated by the sequence quality gate.
+        return {"passed": True, "reason": "expected_dark_pattern"}
+
+    if white_reference is None or black_reference is None:
+        return {"passed": True, "reason": "reference_patterns_not_available"}
+
+    white = to_decoder_u8(to_grayscale(cv2, white_reference)).astype(np.float32)
+    black = to_decoder_u8(to_grayscale(cv2, black_reference)).astype(np.float32)
+    active = np.abs(white - black) >= guard.min_signal_delta_u8
+    if not np.any(active):
+        return {"passed": False, "reason": "reference_patterns_have_no_contrast"}
+    changed = np.abs(candidate - black) >= guard.min_signal_delta_u8
+    change_ratio = float(np.mean(changed[active]))
+    passed = change_ratio >= guard.min_pattern_change_ratio
+    return {
+        "passed": passed,
+        "reason": "projector_blank_or_black_frame" if not passed else "pattern_signal_detected",
+        "pattern_change_ratio": change_ratio,
+        "expected_illuminated_ratio": expected_illuminated_ratio,
+        "min_pattern_change_ratio": guard.min_pattern_change_ratio,
+    }
+
+
 def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: QualityGateConfig) -> dict[str, Any]:
     import numpy as np  # type: ignore
 
@@ -1991,7 +2097,12 @@ def run_scan(args: argparse.Namespace) -> int:
 
     quality_gate_report: dict[str, Any] = {"status": "disabled"}
     if capture_config.quality_gate.enabled:
-        quality_config = CaptureConfig(hdr=hdr, rig=capture_config.rig, quality_gate=capture_config.quality_gate)
+        quality_config = CaptureConfig(
+            hdr=hdr,
+            rig=capture_config.rig,
+            quality_gate=capture_config.quality_gate,
+            frame_guard=capture_config.frame_guard,
+        )
         try:
             quality_gate_report = run_capture_quality_gate(args, patterns, quality_config)
         except (CameraError, RuntimeError, ValueError) as exc:
@@ -2122,6 +2233,8 @@ def run_scan(args: argparse.Namespace) -> int:
             angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
             angle_dir.mkdir(parents=True, exist_ok=True)
             angle_hdr_captures: list[dict[str, Any]] = []
+            white_reference: Any | None = None
+            black_reference: Any | None = None
 
             for spec in patterns:
                 projected = pattern_image(cv2, spec)
@@ -2148,6 +2261,13 @@ def run_scan(args: argparse.Namespace) -> int:
                         )
 
                     for attempt in range(1, args.retries + 2):
+                        if attempt > 1:
+                            # The rejected image is intentionally never written.  Reissue the
+                            # same projector frame and wait again before each recovery capture.
+                            if display is not None:
+                                display.show(cv2, projected)
+                            display_ts = now_ms()
+                            time.sleep(effective_pattern_settle_ms(args) / 1000.0)
                         command_ts = now_ms()
                         row: dict[str, Any] = {
                             "scan_id": scan_id,
@@ -2163,6 +2283,9 @@ def run_scan(args: argparse.Namespace) -> int:
                             "pattern_filename": spec.source_path.name,
                             "pattern_display_timestamp_pc_ms": display_ts,
                             "capture_command_timestamp_pc_ms": command_ts,
+                            "frame_guard_status": "not_checked",
+                            "frame_guard_reason": "",
+                            "frame_guard_metrics": "",
                         }
 
                         try:
@@ -2187,6 +2310,40 @@ def run_scan(args: argparse.Namespace) -> int:
                                     },
                                 )
 
+                            guard_result = validate_projected_frame(
+                                cv2,
+                                frame=frame.image,
+                                projected=projected,
+                                pattern_id=spec.pattern_id,
+                                hdr=hdr,
+                                guard=capture_config.frame_guard,
+                                white_reference=white_reference,
+                                black_reference=black_reference,
+                            )
+                            row["frame_guard_status"] = "passed" if guard_result["passed"] else "rejected"
+                            row["frame_guard_reason"] = str(guard_result["reason"])
+                            row["frame_guard_metrics"] = json.dumps(guard_result, sort_keys=True)
+                            if not guard_result["passed"]:
+                                last_error = f"frame guard rejected candidate: {guard_result['reason']}"
+                                row.update(
+                                    {
+                                        "status": "discarded" if attempt <= args.retries else "failed",
+                                        "error": last_error,
+                                        "camera_timestamp_ms": frame.timestamp_ms,
+                                        "camera_frame_index": frame.frame_index,
+                                    }
+                                )
+                                scan_rows.append(row)
+                                print(
+                                    f"[guard] rejected angle={angle:03d} pattern={spec.pattern_id:03d} "
+                                    f"attempt={attempt}: {guard_result['reason']}",
+                                    flush=True,
+                                )
+                                capture_id += 1
+                                if attempt <= args.retries:
+                                    continue
+                                break
+
                             gui_preview.publish(frame.image)
 
                             size_bytes = 0
@@ -2205,6 +2362,10 @@ def run_scan(args: argparse.Namespace) -> int:
                             )
                             scan_rows.append(row)
                             bracket_frames.append(frame.image)
+                            if spec.pattern_id == 0:
+                                white_reference = frame.image.copy()
+                            elif spec.pattern_id == 1:
+                                black_reference = frame.image.copy()
                             black_offset = float(frame.metadata.get("black_level", hdr.black_offset))
                             bracket_black_offsets.append(black_offset)
                             bracket_entries.append(

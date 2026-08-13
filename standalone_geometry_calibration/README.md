@@ -59,6 +59,11 @@ ChArUco stereo 기하의 projector 좌표가 일치하는지도 별도로 검증
 `geometry_calibration.json`에 좌표 보정을 기록합니다. 물체가 놓인 스캔은 z=0
 등록에 사용하면 안 됩니다.
 
+정확도 평가는 보정에 사용하지 않은 두 번째 빈 스테이지 캡처를
+`--validation-scan`으로 지정합니다. 스크립트는 공간 holdout에서 affine과 2차
+2D 보정을 비교하고 p95 오차가 5% 이상 개선될 때만 2차식을 채택하며, 결과를
+`geometry_stage_registration_report.json`에 저장합니다.
+
 각 pose는 projector-black, full-white, X/Y Gray 역상쌍과 X/Y 4-step sine를
 자동 촬영합니다. 체커보드는 `full-white - black` 영상에서 검출하며, 검출 실패나
 너무 작은 보드는 해당 pose를 거부합니다.
