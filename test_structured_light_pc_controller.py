@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from structured_light_pc_controller import (
     ExposureBracket,
@@ -11,6 +12,7 @@ from structured_light_pc_controller import (
     aruco_stage_geometry,
     aruco_marker_observations,
     assess_fpp_quality,
+    compare_aruco_pose_to_prescan,
     merge_hdr_frames,
     load_capture_config,
     select_structured_light_sequence_bracket,
@@ -239,6 +241,51 @@ def test_aruco_marker_observations_save_corners_and_centers() -> None:
             "center_px": [3.0, 4.0],
         }
     }
+
+
+def test_main_scan_aruco_pose_accepts_matching_prescan_position() -> None:
+    reference = {
+        0: np.array([[10, 10], [20, 10], [20, 20], [10, 20]], dtype=np.float32),
+        2: np.array([[10, 90], [20, 90], [20, 100], [10, 100]], dtype=np.float32),
+    }
+    current = {marker_id: corners + np.array([2.0, -1.0]) for marker_id, corners in reference.items()}
+
+    report = compare_aruco_pose_to_prescan(
+        reference,
+        current,
+        [0, 1, 2, 3],
+        {
+            "max_center_shift_px": 5.0,
+            "max_rotation_deg": 2.0,
+            "max_scale_deviation": 0.03,
+        },
+    )
+
+    assert report["passed"] is True
+    assert report["marker_ids"] == [0, 2]
+    assert report["mean_corner_shift_px"] == pytest.approx(np.sqrt(5.0))
+
+
+def test_main_scan_aruco_pose_rejects_position_different_from_prescan() -> None:
+    reference = {
+        0: np.array([[10, 10], [20, 10], [20, 20], [10, 20]], dtype=np.float32),
+        2: np.array([[10, 90], [20, 90], [20, 100], [10, 100]], dtype=np.float32),
+    }
+    current = {marker_id: corners + np.array([12.0, 0.0]) for marker_id, corners in reference.items()}
+
+    report = compare_aruco_pose_to_prescan(
+        reference,
+        current,
+        [0, 1, 2, 3],
+        {
+            "max_center_shift_px": 5.0,
+            "max_rotation_deg": 2.0,
+            "max_scale_deviation": 0.03,
+        },
+    )
+
+    assert report["passed"] is False
+    assert report["mean_corner_shift_px"] == pytest.approx(12.0)
 
 
 def test_aruco_stage_geometry_uses_configured_stage_cross_coordinates(tmp_path) -> None:

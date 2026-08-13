@@ -1693,6 +1693,188 @@ def verify_aruco_prescan_stability(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def compare_aruco_pose_to_prescan(
+    reference_by_id: dict[int, Any],
+    current_by_id: dict[int, Any],
+    marker_ids: list[int],
+    limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare one current angle against its verified no-pattern prescan pose."""
+    import numpy as np  # type: ignore
+
+    candidates = [
+        candidate
+        for candidate in aruco_marker_candidates(marker_ids)
+        if all(marker_id in reference_by_id and marker_id in current_by_id for marker_id in candidate)
+    ]
+    if not candidates:
+        raise RuntimeError("current frame and verified prescan do not share the same marker set or opposite pair")
+    selected_ids = candidates[0]
+    current = np.asarray(
+        [point for marker_id in selected_ids for point in current_by_id[marker_id]],
+        dtype=np.float32,
+    )
+    reference = np.asarray(
+        [point for marker_id in selected_ids for point in reference_by_id[marker_id]],
+        dtype=np.float32,
+    )
+    corner_distances = np.linalg.norm(current - reference, axis=1)
+    center_shift = float(np.mean(corner_distances))
+    max_corner_shift = float(np.max(corner_distances))
+    rotation_deg, scale, _center = aruco_similarity_summary(current, reference)
+    max_shift = float(limits.get("max_center_shift_px", 10.0))
+    max_rotation = float(limits.get("max_rotation_deg", 2.0))
+    max_scale_deviation = float(limits.get("max_scale_deviation", 0.03))
+    passed = (
+        center_shift <= max_shift
+        and abs(rotation_deg) <= max_rotation
+        and abs(scale - 1.0) <= max_scale_deviation
+    )
+    return {
+        "passed": passed,
+        "marker_ids": selected_ids,
+        "mean_corner_shift_px": center_shift,
+        "max_corner_shift_px": max_corner_shift,
+        "rotation_deg": rotation_deg,
+        "scale": scale,
+        "limits": {
+            "max_center_shift_px": max_shift,
+            "max_rotation_deg": max_rotation,
+            "max_scale_deviation": max_scale_deviation,
+        },
+    }
+
+
+def validate_main_scan_aruco_angle(
+    cv2,
+    *,
+    args: argparse.Namespace,
+    camera: CameraInterface,
+    gui_preview: GuiPreviewPublisher,
+    scan_dir: Path,
+    angle: int,
+    angle_index: int,
+    restore_exposure_us: int,
+    restore_gain_db: float,
+) -> dict[str, Any]:
+    """Strictly validate the current stage pose immediately before its patterns."""
+    role = "zero" if angle_index == 0 else "rotated"
+    reference_path = aruco_prescan_image_path(args.output.resolve(), role)
+    if not reference_path.exists():
+        raise RuntimeError(f"verified {role} ArUco prescan is missing: {reference_path}")
+
+    marker_ids = parse_aruco_ids(args.aruco_ids)
+    reference = read_image(cv2, reference_path)
+    reference_by_id, _reference_selected = require_aruco_markers(
+        cv2,
+        reference,
+        dictionary_name=args.aruco_dictionary,
+        marker_ids=marker_ids,
+    )
+    config = read_json_file(args.camera_config)
+    ximea = config.get("camera", {}).get("ximea", {})
+    limits = ximea.get("aruco_stability_check", {}) if isinstance(ximea, dict) else {}
+    profile = aruco_prescan_camera_profile(args)
+    exposure_us = int(
+        args.aruco_exposure_us
+        if args.aruco_exposure_us is not None
+        else profile.get("exposure_us", 450000)
+    )
+    gain_db = float(profile.get("gain_db", 0.0))
+    attempts = max(1, int(args.main_scan_aruco_retries) + 1)
+    evidence_dir = scan_dir / "aruco_validation" / f"angle_{angle:03d}"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    attempt_reports: list[dict[str, Any]] = []
+    passed_report: dict[str, Any] | None = None
+
+    try:
+        camera.configure_capture(exposure_us=exposure_us, gain_db=gain_db)
+        for attempt in range(1, attempts + 1):
+            frame = camera.capture_frame()
+            gui_preview.publish(frame.image)
+            image_path = evidence_dir / f"attempt_{attempt:02d}.png"
+            save_camera_frame(cv2, frame, image_path)
+            try:
+                current_by_id, detected_ids = require_aruco_markers(
+                    cv2,
+                    frame.image,
+                    dictionary_name=args.aruco_dictionary,
+                    marker_ids=marker_ids,
+                )
+                comparison = compare_aruco_pose_to_prescan(
+                    reference_by_id,
+                    current_by_id,
+                    marker_ids,
+                    limits,
+                )
+                attempt_report = {
+                    "attempt": attempt,
+                    "filename": image_path.name,
+                    "detected_ids": sorted(current_by_id),
+                    "selected_ids": detected_ids,
+                    "camera_timestamp_ms": frame.timestamp_ms,
+                    "camera_frame_index": frame.frame_index,
+                    **comparison,
+                }
+            except (RuntimeError, ValueError) as exc:
+                attempt_report = {
+                    "attempt": attempt,
+                    "filename": image_path.name,
+                    "passed": False,
+                    "reason": str(exc),
+                    "camera_timestamp_ms": frame.timestamp_ms,
+                    "camera_frame_index": frame.frame_index,
+                }
+            attempt_reports.append(attempt_report)
+            if attempt_report.get("passed") is True:
+                passed_report = attempt_report
+                break
+            if attempt < attempts:
+                time.sleep(max(0, args.retry_delay_ms) / 1000.0)
+    finally:
+        camera.configure_capture(
+            exposure_us=int(restore_exposure_us),
+            gain_db=float(restore_gain_db),
+        )
+
+    report = {
+        "status": "passed" if passed_report is not None else "failed",
+        "angle_deg": angle,
+        "role": role,
+        "reference_image": str(reference_path),
+        "exposure_us": exposure_us,
+        "gain_db": gain_db,
+        "attempts": attempt_reports,
+        "accepted_attempt": passed_report,
+    }
+    (evidence_dir / "validation_report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    if passed_report is None:
+        last = attempt_reports[-1] if attempt_reports else {}
+        reason = str(last.get("reason") or "pose differs from the verified prescan")
+        if "mean_corner_shift_px" in last:
+            reason = (
+                f"pose mismatch: shift={last['mean_corner_shift_px']:.2f}px, "
+                f"rotation={last['rotation_deg']:.2f}deg, scale={last['scale']:.4f}"
+            )
+        print(
+            f"[aruco] MAIN_SCAN_VALIDATION_FAILED angle={angle:03d}: {reason}",
+            flush=True,
+        )
+        raise RuntimeError(
+            f"ArUco validation failed immediately before angle {angle} patterns: {reason}"
+        )
+
+    print(
+        f"[aruco] main-scan validation passed angle={angle:03d} "
+        f"marker_ids={passed_report['marker_ids']} "
+        f"shift={passed_report['mean_corner_shift_px']:.2f}px",
+        flush=True,
+    )
+    return report
+
+
 QUALITY_GATE_PATTERN_IDS = (0, 1, 2, 14, 10, 11, 12, 13)
 
 
@@ -2088,7 +2270,7 @@ def run_scan(args: argparse.Namespace) -> int:
         aruco_prescan_dir(args.output.resolve()) / "stage_precalibration.json"
     )
     aruco_stability: dict[str, Any] = {"status": "not_checked"}
-    if configured_preflight_calibration.exists():
+    if configured_preflight_calibration.exists() and not args.main_scan_aruco_validation:
         try:
             aruco_stability = verify_aruco_prescan_stability(args)
         except (CameraError, RuntimeError, ValueError) as exc:
@@ -2168,6 +2350,10 @@ def run_scan(args: argparse.Namespace) -> int:
     hdr_reports: list[dict[str, Any]] = []
     final_quality_reports: dict[str, Any] = {}
     main_scan_marker_visibility: dict[str, Any] = {}
+    main_scan_aruco_validation: dict[str, Any] = {
+        "status": "required" if args.main_scan_aruco_validation else "disabled",
+        "angles": {},
+    }
     display: PatternDisplay | None = None
     camera: CameraInterface | None = None
     camera_settings: CameraSettings | None = None
@@ -2235,6 +2421,41 @@ def run_scan(args: argparse.Namespace) -> int:
             angle_hdr_captures: list[dict[str, Any]] = []
             white_reference: Any | None = None
             black_reference: Any | None = None
+
+            if args.main_scan_aruco_validation and camera is not None:
+                if display is not None:
+                    display.black(cv2)
+                    time.sleep(args.pre_black_ms / 1000.0)
+                try:
+                    validation = validate_main_scan_aruco_angle(
+                        cv2,
+                        args=args,
+                        camera=camera,
+                        gui_preview=gui_preview,
+                        scan_dir=scan_dir,
+                        angle=angle,
+                        angle_index=angle_index,
+                        restore_exposure_us=hdr.brackets[0].exposure_us,
+                        restore_gain_db=hdr.brackets[0].gain_db,
+                    )
+                except (CameraError, RuntimeError, ValueError):
+                    report_path = (
+                        scan_dir
+                        / "aruco_validation"
+                        / f"angle_{angle:03d}"
+                        / "validation_report.json"
+                    )
+                    if report_path.exists():
+                        main_scan_aruco_validation["angles"][str(angle)] = read_json_file(report_path)
+                    main_scan_aruco_validation["status"] = "failed"
+                    raise
+                main_scan_aruco_validation["angles"][str(angle)] = validation
+                main_scan_aruco_validation["status"] = "in_progress"
+            elif args.main_scan_aruco_validation:
+                main_scan_aruco_validation["angles"][str(angle)] = {
+                    "status": "skipped",
+                    "reason": "synthetic capture",
+                }
 
             for spec in patterns:
                 projected = pattern_image(cv2, spec)
@@ -2587,6 +2808,11 @@ def run_scan(args: argparse.Namespace) -> int:
 
             previous_angle = angle
 
+        if args.main_scan_aruco_validation:
+            main_scan_aruco_validation["status"] = (
+                "skipped" if synthetic_capture else "passed"
+            )
+
         for angle in angles:
             angle_dir = scan_dir if len(angles) == 1 else scan_dir / f"angle_{angle:03d}"
             missing = validate_decode_outputs(angle_dir, expected_pattern_ids)
@@ -2617,6 +2843,11 @@ def run_scan(args: argparse.Namespace) -> int:
         print("[scan] Interrupted by user", flush=True)
     except Exception as exc:
         aborted = True
+        if (
+            args.main_scan_aruco_validation
+            and main_scan_aruco_validation["status"] not in {"passed", "skipped"}
+        ):
+            main_scan_aruco_validation["status"] = "failed"
         print(f"[scan] ERROR: {exc}", flush=True)
     finally:
         if display is not None:
@@ -2668,6 +2899,7 @@ def run_scan(args: argparse.Namespace) -> int:
             "quality_gate": quality_gate_report,
             "quality_issue_summary": summarize_quality_issues(quality_gate_report, final_quality_reports),
             "aruco_stability": aruco_stability,
+            "main_scan_aruco_validation": main_scan_aruco_validation,
             "final_quality": final_quality_reports,
             "main_scan_marker_visibility": main_scan_marker_visibility,
             "final_patterns": final_pattern_rows,
@@ -3042,6 +3274,17 @@ def parse_args() -> argparse.Namespace:
         "--aruco-exposure-us",
         type=int,
         help="Exposure used only for no-pattern ArUco prescan captures.",
+    )
+    parser.add_argument(
+        "--main-scan-aruco-validation",
+        action="store_true",
+        help="Validate the current zero/rotated pose immediately before each angle's patterns.",
+    )
+    parser.add_argument(
+        "--main-scan-aruco-retries",
+        default=2,
+        type=int,
+        help="Additional no-pattern ArUco frames allowed at the same stage position before aborting.",
     )
     parser.add_argument("--aruco-precalibration", action="store_true")
     parser.add_argument("--aruco-dictionary", choices=sorted(ARUCO_DICTIONARIES), default="DICT_4X4_50")

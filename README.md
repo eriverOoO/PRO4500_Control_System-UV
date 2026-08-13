@@ -366,6 +366,21 @@ that JSON to the Non-planar_calc decoder as `--fusion-transform`. The latest val
 calibration remains active for later scans until a new pair is captured and
 calculated.
 
+메인 스캔은 사전검증 때와 실제 패턴 촬영 때의 스테이지 위치가 달라지는 문제를
+막기 위해 각 각도의 패턴 촬영 직전에 ArUco를 다시 검증합니다. 실제 순서는
+`현재 0° ArUco 재검증 → 0° 패턴 22장 → X250 회전 → 현재 180° ArUco 재검증
+→ 180° 패턴 22장`입니다. `Next Angle`은 X250 이동과 M400 완료 확인 후 촬영
+프로세스를 재개하며, Python 프로세스가 180° ArUco 검증을 통과하기 전에는 첫
+패턴을 투사하지 않습니다.
+
+각 위치에서는 일시적인 검출 실패를 고려해 같은 위치에서 최대 3프레임을
+검증합니다. 그래도 실패하면 패턴 촬영을 시작하지 않고 해당 스캔을 `aborted`로
+기록합니다. 180°에서 실패한 경우 이미 저장된 0° 영상은 진단 목적으로만
+남으며 디코딩 또는 0°/180° 합성에 사용하면 안 됩니다. 검증 프레임과 판정값은
+`<scan_id>/aruco_validation/angle_000` 및 `angle_180`에 저장됩니다. 위치 불일치로
+실패했다면 X250을 한 번 실행해 0°로 복귀한 뒤 새 스캔 ID로 처음부터 다시
+촬영합니다.
+
 The native control panel includes a `Save All` option.
 
 - Off: save only final decoder images, `pattern_000.png` ... `pattern_021.png`.

@@ -171,6 +171,7 @@ struct AppState {
     std::wstring stagePendingJobLabel;
     bool stageAtKnownZero = false;
     bool stageAtKnownRotated = false;
+    int mainScanArucoFailedAngle = -1;
     int patternScaleBeforeUpdate = -1;
     HBITMAP previewBitmap{};
     FILETIME previewLastWrite{};
@@ -380,6 +381,11 @@ std::wstring selected_scan_type() {
 
 void handle_job_log(const std::wstring& text) {
     append_log(g_app.log, text);
+    if (text.find(L"[aruco] MAIN_SCAN_VALIDATION_FAILED") != std::wstring::npos) {
+        g_app.mainScanArucoFailedAngle =
+            text.find(L"angle=180") != std::wstring::npos ? 180 : 0;
+        set_status(L"ArUco Validation Failed");
+    }
     if (text.find(L"[angle] Waiting") != std::wstring::npos) {
         EnableWindow(g_app.nextAngle, TRUE);
         set_status(L"Waiting Angle");
@@ -684,7 +690,9 @@ std::wstring build_controller_command(JobMode mode) {
     append_optional_arg(cmd, L"--trigger-mode", g_app.trigger);
     append_optional_arg(cmd, L"--image-format", g_app.imageFormat);
     if (mode == JobMode::Scan) {
-        cmd << L" --scan-type " << selected_scan_type();
+        cmd << L" --scan-type " << selected_scan_type()
+            << L" --main-scan-aruco-validation";
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     }
     if (mode != JobMode::ProjectOnly) {
         cmd << L" --gui-preview-file " << quote(gui_preview_file())
@@ -912,6 +920,7 @@ void start_job(JobMode mode, const std::wstring& label) {
         return;
     }
     if (mode == JobMode::Scan) {
+        g_app.mainScanArucoFailedAngle = -1;
         const std::wstring calibration = path_join(
             path_join(get_text(g_app.output), L"aruco_precalibration"),
             L"stage_precalibration.json");
@@ -1476,7 +1485,19 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             g_app.stageAtKnownRotated = false;
         }
         const bool isArucoJob = g_app.jobLabel.find(L"ArUco") != std::wstring::npos;
-        if (isArucoJob && exitCode != 0) {
+        const bool isMainScan =
+            g_app.jobLabel == L"reference scan" || g_app.jobLabel == L"object scan";
+        if (isMainScan && exitCode != 0 && g_app.mainScanArucoFailedAngle >= 0) {
+            const bool failedRotated = g_app.mainScanArucoFailedAngle == 180;
+            const std::wstring message = failedRotated
+                ? L"The 180-degree ArUco validation failed after the 0-degree pattern capture. The 180-degree patterns were not captured, and this scan is marked aborted. Do not decode or fuse the saved 0-degree data. Check the saved aruco_validation evidence, return the stage to 0 with one X250 rotation, and restart with a new scan ID."
+                : L"The 0-degree ArUco validation failed before any main patterns were captured. Check the saved aruco_validation evidence and repeat the scan after restoring the verified 0-degree pose.";
+            MessageBoxW(
+                hwnd,
+                message.c_str(),
+                L"Main Scan Aborted by ArUco Validation",
+                MB_ICONWARNING);
+        } else if (isArucoJob && exitCode != 0) {
             MessageBoxW(
                 hwnd,
                 L"ArUco verification or alignment failed. The previous valid calibration was kept. Check marker visibility, focus, and exposure, then recapture the failed 0 or nominal-180 view.",
