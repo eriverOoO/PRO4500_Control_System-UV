@@ -1,6 +1,6 @@
 [submodule "GUI"]
 	path = GUI
 	url = https://github.com/lee-lab-skku/PRO4500_CONTROL.git
-[submodule "external/repetier-stage-controller"]
-	path = external/repetier-stage-controller
+[submodule "repetier-stage-controller"]
+	path = repetier-stage-controller
 	url = https://github.com/lee-lab-skku/repetier-stage-controller.git

@@ -23,7 +23,7 @@
 #include "GUI/dlpc350_api.h"
 #include "GUI/dlpc350_usb.h"
 #include "projector_usb_diagnostics.h"
-#include "external/repetier-stage-controller/include/repetier_stage_controller.h"
+#include "repetier-stage-controller/include/repetier_stage_controller.h"
 
 namespace {
 
