@@ -42,15 +42,18 @@
     "strict_projector_grid_residual_px": 8.0
   },
   "checkerboard": {
-    "printed_target_inner_corners": [21, 14],
+    "target_type": "charuco",
+    "squares": [22, 15],
     "square_size_mm": 12.0,
-    "visible_inner_corner_min": [3, 3],
-    "visible_inner_corner_max": [7, 7],
-    "minimum_visible_corner_count": 12
+    "marker_size_mm": 9.0,
+    "dictionary": "DICT_5X5_250",
+    "minimum_visible_corner_count": 9,
+    "detection_exposure_us": 2000000,
+    "clahe_clip_limit": 3.0
   },
   "stage_aruco": {
     "dictionary": "DICT_4X4_50",
-    "marker_size_mm": 10.0,
+    "marker_size_mm": 12.0,
     "marker_ids": [0, 1, 2, 3]
   }
 }

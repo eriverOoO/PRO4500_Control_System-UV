@@ -26,12 +26,11 @@ if str(WORKSPACE) not in sys.path:
 from camera_provider import CameraInterface, CameraProvider  # noqa: E402
 from calibration_core import (  # noqa: E402
     PatternProfile,
-    checkerboard_grid_candidates,
+    charuco_object_points,
+    detect_charuco,
+    draw_charuco_detection,
     estimate_image_motion_rms,
-    checkerboard_motion_rms,
     decode_projector_axis_dense,
-    detect_checkerboard,
-    draw_checkerboard_detection,
     estimate_projector_corners_from_local_homographies,
     estimate_stage_plane_from_aruco,
     generate_patterns,
@@ -141,16 +140,6 @@ class CalibrationCapture:
             period_px=int(projector["fringe_period_px"]),
         )
 
-    def _visible_grid_candidates(self) -> list[tuple[int, int]]:
-        board = self.config["checkerboard"]
-        minimum = tuple(int(v) for v in board["visible_inner_corner_min"])
-        maximum = tuple(int(v) for v in board["visible_inner_corner_max"])
-        return checkerboard_grid_candidates(
-            minimum,
-            maximum,
-            int(board.get("minimum_visible_corner_count", 12)),
-        )
-
     def create_session(self, session: Path) -> None:
         if session.exists() and any(session.iterdir()):
             raise ValueError(f"Session folder is not empty: {session}")
@@ -164,21 +153,16 @@ class CalibrationCapture:
             "standalone": True,
             "production_controller_modified_or_invoked": False,
             "checkerboard": {
-                "printed_target_inner_corners": [
-                    int(value) for value in checkerboard["printed_target_inner_corners"]
-                ],
+                "target_type": "charuco",
+                "squares": [int(value) for value in checkerboard["squares"]],
                 "square_size_mm": float(checkerboard["square_size_mm"]),
-                "visible_inner_corner_min": [
-                    int(value) for value in checkerboard["visible_inner_corner_min"]
-                ],
-                "visible_inner_corner_max": [
-                    int(value) for value in checkerboard["visible_inner_corner_max"]
-                ],
+                "marker_size_mm": float(checkerboard["marker_size_mm"]),
+                "dictionary": str(checkerboard["dictionary"]),
                 "minimum_visible_corner_count": int(
-                    checkerboard.get("minimum_visible_corner_count", 12)
+                    checkerboard.get("minimum_visible_corner_count", 9)
                 ),
-                "visible_grid_candidates": [list(size) for size in self._visible_grid_candidates()],
-                "outer_shape_required": False,
+                "detection_exposure_us": int(checkerboard.get("detection_exposure_us", 200000)),
+                "clahe_clip_limit": float(checkerboard.get("clahe_clip_limit", 3.0)),
             },
             "pattern": {
                 "projector_size_px": [self.profile.width, self.profile.height],
@@ -208,6 +192,25 @@ class CalibrationCapture:
         camera.open()
         camera.start()
         return camera
+
+    def _capture_exposure(self) -> tuple[int, float]:
+        camera = self.config["camera"]["ximea"]
+        return int(camera["exposure_us"]), float(camera.get("gain_db", 0.0))
+
+    def _detection_exposure(self) -> tuple[int, float]:
+        exposure_us, gain_db = self._capture_exposure()
+        checkerboard = self.config["checkerboard"]
+        return int(checkerboard.get("detection_exposure_us", exposure_us)), gain_db
+
+    def _set_camera_exposure(
+        self,
+        camera: CameraInterface,
+        exposure_us: int,
+        gain_db: float,
+        purpose: str,
+    ) -> None:
+        camera.configure_capture(exposure_us=exposure_us, gain_db=gain_db)
+        self.log(f"{purpose}: exposure={exposure_us} us, gain={gain_db:g} dB")
 
     def _settle_and_capture(
         self,
@@ -250,44 +253,57 @@ class CalibrationCapture:
             white_pattern = cv2.imread(str(patterns / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
             if black_pattern is None or white_pattern is None:
                 raise ValueError("Generated black/white patterns are missing")
+            capture_exposure_us, capture_gain_db = self._capture_exposure()
+            detection_exposure_us, detection_gain_db = self._detection_exposure()
+            self._set_camera_exposure(
+                camera,
+                detection_exposure_us,
+                detection_gain_db,
+                f"{pose_id}: ChArUco detection",
+            )
+            detection_black = self._settle_and_capture(projector, camera, black_pattern)
+            cv2.imwrite(
+                str(temporary / "charuco_detection_exposure.png"), detection_black
+            )
+            self._set_camera_exposure(
+                camera,
+                capture_exposure_us,
+                capture_gain_db,
+                f"{pose_id}: structured light",
+            )
             self.log(f"{pose_id}: black/white 기준 프레임 촬영")
             black = self._settle_and_capture(projector, camera, black_pattern)
             white = self._settle_and_capture(projector, camera, white_pattern)
             cv2.imwrite(str(temporary / "reference_black.png"), black)
             cv2.imwrite(str(temporary / "reference_white.png"), white)
-            board_manifest = manifest["checkerboard"]
             configured_board = self.config["checkerboard"]
-            candidates = self._visible_grid_candidates()
-            # Migrate sessions created by the earlier full-board detector so the
-            # operator can retry without deleting already captured evidence.
-            board_manifest["printed_target_inner_corners"] = [
-                int(v) for v in configured_board["printed_target_inner_corners"]
-            ]
-            board_manifest["visible_grid_candidates"] = [list(size) for size in candidates]
-            board_manifest["visible_inner_corner_min"] = [
-                int(v) for v in configured_board["visible_inner_corner_min"]
-            ]
-            board_manifest["visible_inner_corner_max"] = [
-                int(v) for v in configured_board["visible_inner_corner_max"]
-            ]
-            board_manifest["minimum_visible_corner_count"] = int(
-                configured_board.get("minimum_visible_corner_count", 12)
+            if manifest["checkerboard"].get("target_type") != "charuco":
+                raise ValueError("기존 체커보드 세션은 ChArUco 촬영과 호환되지 않습니다. 새 세션을 생성하세요.")
+            corners, charuco_ids, detection, report = detect_charuco(
+                detection_black, detection_black, configured_board
             )
-            board_manifest.pop("inner_corners", None)
-            corners, detection, report = detect_checkerboard(black, white, candidates)
-            cv2.imwrite(str(temporary / "checkerboard_response.png"), detection)
-            detected_size = tuple(int(v) for v in report.get("detected_inner_corners", [3, 3]))
+            report["detection_exposure_us"] = detection_exposure_us
+            report["structured_light_exposure_us"] = capture_exposure_us
+            cv2.imwrite(str(temporary / "charuco_response.png"), detection)
             cv2.imwrite(
-                str(temporary / "checkerboard_detection.png"),
-                draw_checkerboard_detection(white, detected_size, corners),
+                str(temporary / "charuco_detection.png"),
+                draw_charuco_detection(detection, corners, charuco_ids),
             )
             minimum_area = float(self.config["capture"]["minimum_board_area_ratio"])
-            if corners is None or float(report.get("board_image_area_ratio", 0.0)) < minimum_area:
+            minimum_corners = int(configured_board.get("minimum_visible_corner_count", 9))
+            if (
+                corners is None
+                or charuco_ids is None
+                or len(charuco_ids) < minimum_corners
+                or float(report.get("board_image_area_ratio", 0.0)) < minimum_area
+            ):
                 raise ValueError(
-                    "체커보드 검출 실패 또는 화면에서 너무 작습니다. "
-                    f"검출={report['found']}, 영역비={report.get('board_image_area_ratio', 0.0):.3%}. 자세를 바꿔 재촬영하세요."
+                    "ChArUco 검출 실패 또는 ID 코너가 부족합니다. "
+                    f"검출 코너={report.get('corner_count', 0)}개(최소 {minimum_corners}개), "
+                    f"영역비={report.get('board_image_area_ratio', 0.0):.3%}."
                 )
             np.save(temporary / "checkerboard_corners.npy", corners)
+            np.save(temporary / "charuco_ids.npy", charuco_ids)
             pattern_manifest = read_json(patterns / "pattern_manifest.json")
             for axis in ("x", "y"):
                 axis_output = temporary / axis
@@ -304,38 +320,57 @@ class CalibrationCapture:
                         raise RuntimeError(f"Could not save captured pattern: {entry['file']}")
                     self.log(f"{pose_id}: {axis.upper()} {index}/{len(sequence)}")
             self.log(f"{pose_id}: 촬영 중 보정판 움직임 확인")
-            final_white = self._settle_and_capture(projector, camera, white_pattern)
-            cv2.imwrite(str(temporary / "reference_white_final.png"), final_white)
-            final_corners, final_detection, final_report = detect_checkerboard(
-                black, final_white, candidates
+            self._set_camera_exposure(
+                camera,
+                detection_exposure_us,
+                detection_gain_db,
+                f"{pose_id}: final ChArUco detection",
             )
-            cv2.imwrite(str(temporary / "checkerboard_response_final.png"), final_detection)
+            final_detection_black = self._settle_and_capture(
+                projector, camera, black_pattern
+            )
             cv2.imwrite(
-                str(temporary / "checkerboard_detection_final.png"),
-                draw_checkerboard_detection(
-                    final_white,
-                    tuple(int(v) for v in final_report.get("detected_inner_corners", detected_size)),
-                    final_corners,
-                ),
+                str(temporary / "charuco_detection_exposure_final.png"),
+                final_detection_black,
+            )
+            final_corners, final_ids, final_detection, final_report = detect_charuco(
+                final_detection_black, final_detection_black, configured_board
+            )
+            final_report["detection_exposure_us"] = detection_exposure_us
+            cv2.imwrite(str(temporary / "charuco_response_final.png"), final_detection)
+            cv2.imwrite(
+                str(temporary / "charuco_detection_final.png"),
+                draw_charuco_detection(final_detection, final_corners, final_ids),
             )
             motion_limit_px = float(
                 self.config["capture"].get("maximum_pose_motion_rms_px", 2.0)
             )
-            final_size = tuple(int(v) for v in final_report.get("detected_inner_corners", []))
-            if final_corners is not None and final_size == detected_size:
-                motion_rms_px, motion_order = checkerboard_motion_rms(corners, final_corners)
-                motion_method = "checkerboard_corners"
+            common_ids: list[int] = []
+            if final_corners is not None and final_ids is not None:
+                initial_by_id = {int(i): p for i, p in zip(charuco_ids, corners)}
+                final_by_id = {int(i): p for i, p in zip(final_ids, final_corners)}
+                common_ids = sorted(set(initial_by_id) & set(final_by_id))
+            if len(common_ids) >= 6:
+                displacement = np.array(
+                    [initial_by_id[i] - final_by_id[i] for i in common_ids], dtype=np.float32
+                )
+                motion_rms_px = float(np.sqrt(np.mean(np.sum(displacement**2, axis=1))))
+                motion_order = "charuco_id_matched"
+                motion_method = "charuco_ids"
                 motion_score: float | None = None
             else:
-                motion_rms_px, motion_score = estimate_image_motion_rms(white, final_white)
+                motion_rms_px, motion_score = estimate_image_motion_rms(
+                    detection_black, final_detection_black
+                )
                 motion_order = "not_applicable"
-                motion_method = "white_frame_ecc" if motion_rms_px is not None else "unverified"
+                motion_method = "black_frame_ecc" if motion_rms_px is not None else "unverified"
             report["capture_motion_validation"] = {
                 "rms_px": motion_rms_px,
                 "limit_px": motion_limit_px,
                 "corner_order": motion_order,
                 "method": motion_method,
                 "ecc_score": motion_score,
+                "common_charuco_ids": common_ids,
                 "final_detection": final_report,
             }
             if motion_rms_px is not None and motion_rms_px > motion_limit_px:
@@ -375,12 +410,14 @@ class CalibrationCapture:
                 )
             )
             decoded_corner_count = int(np.count_nonzero(decoded_corner_mask))
+            object_template = charuco_object_points(configured_board, charuco_ids)
             strict_mask, strict_report = strict_checkerboard_correspondence_mask(
                 corners,
                 projector_corners,
                 decoded_corner_mask,
-                detected_size,
+                None,
                 tuple(int(v) for v in manifest["pattern"]["projector_size_px"]),
+                planar_object_points=object_template,
                 max_camera_grid_residual_px=float(
                     corner_config.get("strict_camera_grid_residual_px", 5.0)
                 ),
@@ -392,7 +429,7 @@ class CalibrationCapture:
             report["decoded_projector_corner_count"] = decoded_corner_count
             report["strict_validation"] = strict_report
             minimum_decoded_corners = int(
-                configured_board.get("minimum_visible_corner_count", 12)
+                configured_board.get("minimum_visible_corner_count", 9)
             )
             if strict_corner_count < minimum_decoded_corners:
                 raise ValueError(
@@ -411,6 +448,7 @@ class CalibrationCapture:
                     "captured_at": datetime.now().isoformat(timespec="seconds"),
                     "relative_dir": relative,
                     "checkerboard_detection": report,
+                    "target_type": "charuco",
                     "operator_motion_known": False,
                 }
             )
@@ -425,6 +463,15 @@ class CalibrationCapture:
                 shutil.rmtree(temporary)
             raise
         finally:
+            if camera is not None:
+                try:
+                    exposure_us, gain_db = self._capture_exposure()
+                    camera.configure_capture(
+                        exposure_us=exposure_us,
+                        gain_db=gain_db,
+                    )
+                except Exception:
+                    pass
             if projector is not None:
                 projector.show(np.zeros((self.profile.height, self.profile.width), dtype=np.uint8))
                 projector.close()
@@ -513,7 +560,9 @@ class CalibrationApp:
         self.root.geometry("900x650")
         self.messages: queue.Queue[tuple[str, str]] = queue.Queue()
         self.running = False
-        self.session_var = StringVar(value=str(WORKSPACE / "captures" / "geometry_calibration_session"))
+        self.session_var = StringVar(
+            value=str(WORKSPACE / "captures" / "charuco_geometry_calibration_session")
+        )
         self.config_path = ROOT / "calibration_config.json"
         self.worker = CalibrationCapture(self.config_path, self._queue_log)
         self._build()
@@ -528,12 +577,15 @@ class CalibrationApp:
         cfg = read_json(self.config_path)
         board = cfg["checkerboard"]
         projector = cfg["projector"]
+        stage = cfg["stage_aruco"]
         info = (
-            f"인쇄 체커보드: 내부 코너 {board['printed_target_inner_corners'][0]}×"
-            f"{board['printed_target_inner_corners'][1]}, "
-            f"실측 칸 {board['square_size_mm']} mm  |  "
+            f"ChArUco 보드: {board['squares'][0]}×{board['squares'][1]} squares, "
+            f"square {board['square_size_mm']} mm, marker {board['marker_size_mm']} mm  |  "
             f"프로젝터: {projector['width_px']}×{projector['height_px']}, monitor {projector['monitor_index']}\n"
-            "각 pose에서 보이는 4×4~7×7 내부 코너의 모든 조합을 자동 검출합니다. 촬영 중 고정하고 완료 후 자세를 바꿉니다."
+            f"Stage ArUco 검은 외곽 한 변: {stage['marker_size_mm']} mm "
+            "(흰색 여백 제외)\n"
+            "프로젝터 OFF 프레임에서 고유 ID를 검출하고, 구조광은 주변 백색 영역에서 해독합니다. "
+            "촬영 중 보드를 고정하고 완료 후 자세를 바꾸세요."
         )
         Label(self.root, text=info, justify=LEFT, anchor="w").pack(fill=X, padx=12, pady=8)
         buttons = Frame(self.root)

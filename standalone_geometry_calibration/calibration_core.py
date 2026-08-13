@@ -142,6 +142,92 @@ def detect_checkerboard(
     return points, selected_image, report
 
 
+def create_charuco_board(config: dict[str, Any]) -> cv2.aruco.CharucoBoard:
+    dictionary_name = str(config.get("dictionary", "DICT_5X5_250"))
+    dictionary_id = getattr(cv2.aruco, dictionary_name)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+    squares = tuple(int(v) for v in config["squares"])
+    return cv2.aruco.CharucoBoard(
+        squares,
+        float(config["square_size_mm"]),
+        float(config["marker_size_mm"]),
+        dictionary,
+    )
+
+
+def detect_charuco(
+    black: np.ndarray,
+    white: np.ndarray,
+    config: dict[str, Any],
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray, dict[str, Any]]:
+    """Detect globally identified ChArUco corners from UV-robust image variants."""
+    board = create_charuco_board(config)
+    detector = cv2.aruco.CharucoDetector(board)
+    black_gray = _gray_u8(black)
+    white_gray = _gray_u8(white)
+    difference = cv2.normalize(
+        cv2.absdiff(white_gray, black_gray), None, 0, 255, cv2.NORM_MINMAX
+    ).astype(np.uint8)
+    clip = float(config.get("clahe_clip_limit", 3.0))
+    clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8))
+    sources = (
+        ("projector_black", black_gray),
+        ("projector_black_clahe", clahe.apply(black_gray)),
+        ("projector_white", white_gray),
+        ("projector_white_clahe", clahe.apply(white_gray)),
+        ("white_black_absdiff", difference),
+    )
+    best_corners: np.ndarray | None = None
+    best_ids: np.ndarray | None = None
+    best_image = black_gray
+    best_source = "none"
+    for source_name, image in sources:
+        for polarity_name, candidate in (("normal", image), ("inverted", 255 - image)):
+            corners, ids, _marker_corners, _marker_ids = detector.detectBoard(candidate)
+            count = 0 if ids is None else int(np.asarray(ids).size)
+            if best_ids is None or count > int(best_ids.size):
+                best_corners = None if corners is None else np.asarray(corners, dtype=np.float32).reshape(-1, 2)
+                best_ids = None if ids is None else np.asarray(ids, dtype=np.int32).reshape(-1)
+                best_image = candidate
+                best_source = f"{source_name}:{polarity_name}"
+    report: dict[str, Any] = {
+        "found": best_ids is not None and best_ids.size > 0,
+        "target_type": "charuco",
+        "detection_source": best_source,
+        "corner_count": 0 if best_ids is None else int(best_ids.size),
+        "charuco_ids": [] if best_ids is None else best_ids.astype(int).tolist(),
+        "contrast_p95_minus_p05": float(
+            np.percentile(black_gray, 95) - np.percentile(black_gray, 5)
+        ),
+    }
+    if best_corners is not None and best_corners.shape[0] >= 3:
+        hull_area = float(cv2.contourArea(cv2.convexHull(best_corners)))
+        report["board_image_area_ratio"] = hull_area / float(best_image.size)
+    else:
+        report["board_image_area_ratio"] = 0.0
+    return best_corners, best_ids, best_image, report
+
+
+def draw_charuco_detection(
+    image: np.ndarray, corners: np.ndarray | None, ids: np.ndarray | None
+) -> np.ndarray:
+    preview = cv2.cvtColor(_gray_u8(image), cv2.COLOR_GRAY2BGR)
+    if corners is not None and ids is not None:
+        cv2.aruco.drawDetectedCornersCharuco(
+            preview,
+            np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2),
+            np.asarray(ids, dtype=np.int32).reshape(-1, 1),
+        )
+    return preview
+
+
+def charuco_object_points(config: dict[str, Any], ids: np.ndarray) -> np.ndarray:
+    board = create_charuco_board(config)
+    all_points = np.asarray(board.getChessboardCorners(), dtype=np.float32).reshape(-1, 3)
+    indices = np.asarray(ids, dtype=np.int32).reshape(-1)
+    return all_points[indices]
+
+
 def checkerboard_grid_candidates(
     minimum: tuple[int, int],
     maximum: tuple[int, int],
@@ -357,18 +443,25 @@ def strict_checkerboard_correspondence_mask(
     camera_corners: np.ndarray,
     projector_corners: np.ndarray,
     decoded_mask: np.ndarray,
-    inner_corners: tuple[int, int],
+    inner_corners: tuple[int, int] | None,
     projector_size: tuple[int, int],
     *,
+    planar_object_points: np.ndarray | None = None,
     max_camera_grid_residual_px: float = 5.0,
     max_projector_grid_residual_px: float = 8.0,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Reject decoded points that do not form the same planar checkerboard grid."""
-    cols, rows = (int(v) for v in inner_corners)
     camera = np.asarray(camera_corners, dtype=np.float32).reshape(-1, 2)
     projector = np.asarray(projector_corners, dtype=np.float32).reshape(-1, 2)
     decoded = np.asarray(decoded_mask, dtype=bool).reshape(-1)
-    expected = cols * rows
+    if planar_object_points is None:
+        if inner_corners is None:
+            raise ValueError("inner_corners or planar_object_points is required")
+        cols, rows = (int(v) for v in inner_corners)
+        ideal = np.array([(x, y) for y in range(rows) for x in range(cols)], dtype=np.float32)
+    else:
+        ideal = np.asarray(planar_object_points, dtype=np.float32).reshape(-1, 3)[:, :2]
+    expected = ideal.shape[0]
     if camera.shape[0] != expected or projector.shape[0] != expected or decoded.size != expected:
         raise ValueError("Checkerboard correspondence count does not match detected grid")
     projector_width, projector_height = (int(v) for v in projector_size)
@@ -390,7 +483,6 @@ def strict_checkerboard_correspondence_mask(
     }
     if np.count_nonzero(initial) < 4:
         return accepted, report
-    ideal = np.array([(x, y) for y in range(rows) for x in range(cols)], dtype=np.float32)
     camera_h, _ = cv2.findHomography(
         ideal[initial], camera[initial], cv2.RANSAC, float(max_camera_grid_residual_px)
     )
@@ -483,15 +575,22 @@ def solve_geometry(session: Path) -> dict[str, Any]:
     object_points: list[np.ndarray] = []
     camera_points: list[np.ndarray] = []
     projector_points: list[np.ndarray] = []
+    accepted_pose_ids: list[str] = []
     pose_reports: list[dict[str, Any]] = []
     camera_size: tuple[int, int] | None = None
     for pose in manifest.get("captured_poses", []):
         pose_dir = session / pose["relative_dir"]
         corners = np.load(pose_dir / "checkerboard_corners.npy", allow_pickle=False).astype(np.float32)
-        detected_grid = tuple(
-            int(v) for v in pose["checkerboard_detection"]["detected_inner_corners"]
-        )
-        object_template = board_object_points(detected_grid, square_mm)
+        target_type = str(manifest["checkerboard"].get("target_type", "checkerboard"))
+        if target_type == "charuco":
+            charuco_ids = np.load(pose_dir / "charuco_ids.npy", allow_pickle=False).astype(np.int32)
+            object_template = charuco_object_points(manifest["checkerboard"], charuco_ids)
+            detected_grid = None
+        else:
+            detected_grid = tuple(
+                int(v) for v in pose["checkerboard_detection"]["detected_inner_corners"]
+            )
+            object_template = board_object_points(detected_grid, square_mm)
         corner_config = manifest.get("projector_corner_estimation", {})
         x_map, valid_x = decode_projector_axis_dense(
             pose_dir / "x",
@@ -518,7 +617,7 @@ def solve_geometry(session: Path) -> dict[str, Any]:
             minimum_valid_pixels=int(corner_config.get("minimum_valid_pixels", 24)),
         )
         minimum_decoded_corners = int(
-            manifest["checkerboard"].get("minimum_visible_corner_count", 12)
+            manifest["checkerboard"].get("minimum_visible_corner_count", 9)
         )
         valid, strict_report = strict_checkerboard_correspondence_mask(
             corners,
@@ -526,6 +625,7 @@ def solve_geometry(session: Path) -> dict[str, Any]:
             valid,
             detected_grid,
             (projector_width, projector_height),
+            planar_object_points=object_template,
             max_camera_grid_residual_px=float(
                 corner_config.get("strict_camera_grid_residual_px", 5.0)
             ),
@@ -550,6 +650,7 @@ def solve_geometry(session: Path) -> dict[str, Any]:
         object_points.append(object_template[valid])
         camera_points.append(corners[valid].reshape(-1, 1, 2))
         projector_points.append(projector_corners[valid].astype(np.float32).reshape(-1, 1, 2))
+        accepted_pose_ids.append(str(pose["pose_id"]))
         pose_reports.append(
             {
                 "pose_id": pose["pose_id"],
@@ -565,15 +666,6 @@ def solve_geometry(session: Path) -> dict[str, Any]:
         )
     quality_limits = manifest.get("calibration_quality", {})
     minimum_poses = int(quality_limits.get("minimum_accepted_poses", 8))
-    diagnostic = {
-        "captured_pose_count": len(manifest.get("captured_poses", [])),
-        "accepted_pose_count": len(object_points),
-        "minimum_accepted_poses": minimum_poses,
-        "pose_reports": pose_reports,
-    }
-    (session / "geometry_calibration_diagnostics.json").write_text(
-        json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
     if camera_size is None or len(object_points) < minimum_poses:
         raise ValueError(
             f"Only {len(object_points)} of {len(manifest.get('captured_poses', []))} captured poses "
@@ -582,31 +674,126 @@ def solve_geometry(session: Path) -> dict[str, Any]:
             "checkerboard poses are required; see geometry_calibration_diagnostics.json. "
             "10-16 diverse poses are recommended"
         )
-    camera_rms, camera_k, camera_dist, _rvecs, _tvecs = cv2.calibrateCamera(
-        object_points, camera_points, camera_size, None, None
-    )
-    projector_rms, projector_k, projector_dist, _prvecs, _ptvecs = cv2.calibrateCamera(
-        object_points, projector_points, (projector_width, projector_height), None, None
-    )
-    stereo_flags = cv2.CALIB_FIX_INTRINSIC
-    stereo_rms, camera_k, camera_dist, projector_k, projector_dist, rotation, translation, essential, fundamental = cv2.stereoCalibrate(
-        object_points,
-        camera_points,
-        projector_points,
+    def calibrate_subset(indices: list[int]) -> tuple[Any, ...]:
+        subset_object = [object_points[index] for index in indices]
+        subset_camera = [camera_points[index] for index in indices]
+        subset_projector = [projector_points[index] for index in indices]
+        camera_rms, camera_k, camera_dist, _rvecs, _tvecs = cv2.calibrateCamera(
+            subset_object, subset_camera, camera_size, None, None
+        )
+        projector_rms, projector_k, projector_dist, _prvecs, _ptvecs = cv2.calibrateCamera(
+            subset_object,
+            subset_projector,
+            (projector_width, projector_height),
+            None,
+            None,
+        )
+        stereo_rms, camera_k, camera_dist, projector_k, projector_dist, rotation, translation, essential, fundamental = cv2.stereoCalibrate(
+            subset_object,
+            subset_camera,
+            subset_projector,
+            camera_k,
+            camera_dist,
+            projector_k,
+            projector_dist,
+            camera_size,
+            flags=cv2.CALIB_FIX_INTRINSIC,
+            criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 1e-9),
+        )
+        return (
+            camera_rms,
+            camera_k,
+            camera_dist,
+            projector_rms,
+            projector_k,
+            projector_dist,
+            stereo_rms,
+            rotation,
+            translation,
+            essential,
+            fundamental,
+        )
+
+    camera_limit = float(quality_limits.get("max_camera_rms_px", 1.0))
+    projector_limit = float(quality_limits.get("max_projector_rms_px", 1.5))
+    stereo_limit = float(quality_limits.get("max_stereo_rms_px", 2.0))
+    selected_indices = list(range(len(object_points)))
+    excluded_global_pose_ids: list[str] = []
+    calibration = calibrate_subset(selected_indices)
+
+    def passes(values: tuple[Any, ...]) -> bool:
+        return bool(
+            float(values[0]) <= camera_limit
+            and float(values[3]) <= projector_limit
+            and float(values[6]) <= stereo_limit
+        )
+
+    while not passes(calibration) and len(selected_indices) > minimum_poses:
+        candidates: list[tuple[float, float, int, list[int], tuple[Any, ...]]] = []
+        for removed_index in selected_indices:
+            trial_indices = [index for index in selected_indices if index != removed_index]
+            trial = calibrate_subset(trial_indices)
+            normalized_quality = max(
+                float(trial[0]) / camera_limit,
+                float(trial[3]) / projector_limit,
+                float(trial[6]) / stereo_limit,
+            )
+            candidates.append(
+                (normalized_quality, float(trial[6]), removed_index, trial_indices, trial)
+            )
+        _score, trial_stereo, removed_index, trial_indices, trial = min(candidates)
+        current_score = max(
+            float(calibration[0]) / camera_limit,
+            float(calibration[3]) / projector_limit,
+            float(calibration[6]) / stereo_limit,
+        )
+        trial_score = max(
+            float(trial[0]) / camera_limit,
+            float(trial[3]) / projector_limit,
+            float(trial[6]) / stereo_limit,
+        )
+        if trial_score >= current_score and trial_stereo >= float(calibration[6]):
+            break
+        excluded_global_pose_ids.append(accepted_pose_ids[removed_index])
+        selected_indices = trial_indices
+        calibration = trial
+
+    (
+        camera_rms,
         camera_k,
         camera_dist,
+        projector_rms,
         projector_k,
         projector_dist,
-        camera_size,
-        flags=stereo_flags,
-        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 1e-9),
+        stereo_rms,
+        rotation,
+        translation,
+        essential,
+        fundamental,
+    ) = calibration
+    for report in pose_reports:
+        if report["pose_id"] in excluded_global_pose_ids:
+            report["used"] = False
+            report["reason"] = "excluded by global stereo leave-one-out validation"
+            report["global_stereo_outlier"] = True
+
+    diagnostic = {
+        "captured_pose_count": len(manifest.get("captured_poses", [])),
+        "accepted_pose_count": len(selected_indices),
+        "minimum_accepted_poses": minimum_poses,
+        "excluded_global_pose_ids": excluded_global_pose_ids,
+        "pose_reports": pose_reports,
+    }
+    (session / "geometry_calibration_diagnostics.json").write_text(
+        json.dumps(diagnostic, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     quality_checks = {
-        "accepted_pose_count": len(object_points),
+        "accepted_pose_count": len(selected_indices),
+        "excluded_global_pose_ids": excluded_global_pose_ids,
         "minimum_accepted_poses": minimum_poses,
-        "camera_rms_pass": float(camera_rms) <= float(quality_limits.get("max_camera_rms_px", 1.0)),
-        "projector_rms_pass": float(projector_rms) <= float(quality_limits.get("max_projector_rms_px", 1.5)),
-        "stereo_rms_pass": float(stereo_rms) <= float(quality_limits.get("max_stereo_rms_px", 2.0)),
+        "camera_rms_pass": float(camera_rms) <= camera_limit,
+        "projector_rms_pass": float(projector_rms) <= projector_limit,
+        "stereo_rms_pass": float(stereo_rms) <= stereo_limit,
         "limits": quality_limits,
     }
     quality_checks["valid"] = bool(
@@ -668,8 +855,7 @@ def estimate_stage_plane_from_aruco(
     object_corners = np.array(
         [[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]], dtype=np.float32
     )
-    normals: list[np.ndarray] = []
-    offsets: list[float] = []
+    marker_points_camera: list[np.ndarray] = []
     used_ids: list[int] = []
     for marker_corners, marker_id in zip(corners, ids.reshape(-1), strict=True):
         marker_id = int(marker_id)
@@ -682,18 +868,22 @@ def estimate_stage_plane_from_aruco(
         if not ok:
             continue
         rotation, _ = cv2.Rodrigues(rvec)
-        normal = rotation[:, 2]
-        if normal[2] > 0:
-            normal = -normal
-        normal /= np.linalg.norm(normal)
-        normals.append(normal)
-        offsets.append(float(-normal @ tvec.reshape(3)))
+        marker_points_camera.append(
+            object_corners.astype(np.float64) @ rotation.T
+            + tvec.reshape(1, 3)
+        )
         used_ids.append(marker_id)
-    if not normals:
+    if not marker_points_camera:
         raise ValueError("Requested ArUco markers were not detected or pose estimation failed")
-    normal = np.mean(np.stack(normals), axis=0)
+    points_camera = np.concatenate(marker_points_camera, axis=0)
+    center = np.mean(points_camera, axis=0)
+    _u, _singular_values, vh = np.linalg.svd(points_camera - center)
+    normal = vh[-1]
+    if normal[2] > 0:
+        normal = -normal
     normal /= np.linalg.norm(normal)
-    offset = float(np.median(offsets))
+    offset = float(-normal @ center)
+    plane_residual = points_camera @ normal + offset
     preview = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     cv2.aruco.drawDetectedMarkers(preview, corners, ids)
     return {
@@ -701,6 +891,9 @@ def estimate_stage_plane_from_aruco(
         "normal": normal.tolist(),
         "offset_mm": offset,
         "marker_size_mm": float(marker_size_mm),
+        "marker_size_definition": "outer black square edge; white margin excluded",
         "marker_ids": used_ids,
+        "plane_fit_method": "svd_fit_to_all_marker_corners_in_camera_coordinates",
+        "plane_fit_residual_abs_max_mm": float(np.max(np.abs(plane_residual))),
         "z0_is_marker_print_surface": True,
     }, preview

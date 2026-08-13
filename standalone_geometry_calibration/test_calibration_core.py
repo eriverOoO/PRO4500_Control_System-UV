@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import cv2
 import numpy as np
 
+from standalone_geometry_calibration.app import CalibrationCapture
 from standalone_geometry_calibration.calibration_core import (
     PatternProfile,
     checkerboard_grid_candidates,
     checkerboard_motion_rms,
+    charuco_object_points,
+    create_charuco_board,
+    detect_charuco,
     estimate_image_motion_rms,
     decode_projector_axis,
     estimate_projector_corners_from_local_homographies,
@@ -16,6 +21,25 @@ from standalone_geometry_calibration.calibration_core import (
     gray_to_binary,
     strict_checkerboard_correspondence_mask,
 )
+
+
+def test_calibration_capture_uses_separate_detection_and_pattern_exposures() -> None:
+    capture = CalibrationCapture.__new__(CalibrationCapture)
+    capture.config = {
+        "camera": {"ximea": {"exposure_us": 200000, "gain_db": 0.0}},
+        "checkerboard": {"detection_exposure_us": 2000000},
+    }
+
+    assert capture._capture_exposure() == (200000, 0.0)
+    assert capture._detection_exposure() == (2000000, 0.0)
+
+
+def test_stage_aruco_size_is_separate_from_charuco_board_marker() -> None:
+    config_path = Path(__file__).with_name("calibration_config.json")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert config["checkerboard"]["marker_size_mm"] == 9.0
+    assert config["stage_aruco"]["marker_size_mm"] == 12.0
 
 
 def test_partial_grid_candidates_include_3x4_but_exclude_3x3() -> None:
@@ -57,6 +81,24 @@ def test_image_motion_estimation_detects_translation() -> None:
     assert 4.0 <= rms <= 6.0
 
 
+def test_charuco_detection_preserves_global_corner_ids() -> None:
+    config = {
+        "squares": [8, 6],
+        "square_size_mm": 12.0,
+        "marker_size_mm": 9.0,
+        "dictionary": "DICT_5X5_250",
+        "clahe_clip_limit": 3.0,
+    }
+    image = create_charuco_board(config).generateImage((800, 600), marginSize=20)
+    corners, ids, _detection, report = detect_charuco(image, image, config)
+    assert corners is not None and ids is not None
+    assert len(ids) == (8 - 1) * (6 - 1)
+    object_points = charuco_object_points(config, ids)
+    assert np.array_equal(ids, np.arange(len(ids), dtype=np.int32))
+    assert np.allclose(object_points[1] - object_points[0], [12.0, 0.0, 0.0])
+    assert report["target_type"] == "charuco"
+
+
 def test_gray_to_binary_round_trip() -> None:
     values = np.arange(128, dtype=np.int32)
     gray = values ^ (values >> 1)
@@ -85,6 +127,34 @@ def test_checkerboard_pattern_files_are_lossless_png(tmp_path) -> None:
     image = cv2.imread(str(tmp_path / "x" / "gray_00.png"), cv2.IMREAD_GRAYSCALE)
     assert image is not None
     assert set(np.unique(image)) <= {0, 255}
+
+
+def test_current_charuco_session_global_outlier_is_excluded_if_available() -> None:
+    session = Path(
+        r"C:\Users\LEELAB\Desktop\PRO4500_CONTROL_ximea\captures\charuco_geometry_calibration_session"
+    )
+    if not (session / "session_manifest.json").is_file():
+        return
+    from standalone_geometry_calibration.calibration_core import solve_geometry
+
+    generated_paths = (
+        session / "geometry_calibration.json",
+        session / "geometry_calibration_diagnostics.json",
+    )
+    original_outputs = {
+        path: path.read_bytes() if path.is_file() else None for path in generated_paths
+    }
+    try:
+        result = solve_geometry(session)
+    finally:
+        for path, original in original_outputs.items():
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
+    assert result["quality"]["valid"]
+    assert result["quality"]["accepted_pose_count"] >= 8
+    assert "pose_003" in result["quality"]["excluded_global_pose_ids"]
 
 
 def test_local_homography_estimates_corner_when_center_is_uv_invalid() -> None:
