@@ -52,6 +52,7 @@ enum ControlId {
     IDC_TRIGGER,
     IDC_IMAGE_FORMAT,
     IDC_ANGLES,
+    IDC_SCAN_TYPE,
     IDC_WINDOWED,
     IDC_STRETCH,
     IDC_PAUSE_FIRST,
@@ -128,6 +129,7 @@ struct AppState {
     HWND trigger{};
     HWND imageFormat{};
     HWND angles{};
+    HWND scanType{};
     HWND windowed{};
     HWND stretch{};
     HWND pauseFirst{};
@@ -368,6 +370,12 @@ void apply_led_value(int value) {
         set_status(L"LED Error");
         append_log(g_app.log, L"\r\n[led] " + error + L"\r\n");
     }
+}
+
+std::wstring selected_scan_type() {
+    return SendMessageW(g_app.scanType, CB_GETCURSEL, 0, 0) == 0
+        ? L"reference"
+        : L"object";
 }
 
 void handle_job_log(const std::wstring& text) {
@@ -675,6 +683,9 @@ std::wstring build_controller_command(JobMode mode) {
     append_optional_arg(cmd, L"--fps", g_app.fps);
     append_optional_arg(cmd, L"--trigger-mode", g_app.trigger);
     append_optional_arg(cmd, L"--image-format", g_app.imageFormat);
+    if (mode == JobMode::Scan) {
+        cmd << L" --scan-type " << selected_scan_type();
+    }
     if (mode != JobMode::ProjectOnly) {
         cmd << L" --gui-preview-file " << quote(gui_preview_file())
             << L" --gui-preview-max-width 360";
@@ -717,6 +728,7 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.projectOnly, !running);
     EnableWindow(g_app.singleCapture, !running);
     EnableWindow(g_app.continuousCapture, !running);
+    EnableWindow(g_app.scanType, !running);
     EnableWindow(g_app.arucoCaptureZero, !running);
     EnableWindow(g_app.arucoCaptureRotated, !running);
     EnableWindow(g_app.arucoCalculate, !running);
@@ -1212,6 +1224,24 @@ void build_ui(HWND hwnd) {
     g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0,180", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
     g_app.settle = make_edit(hwnd, IDC_SETTLE, L"1000", 655, y, 80, 24);
+    make_label(hwnd, L"Scan type", 750, y + 4, 65, 22);
+    g_app.scanType = CreateWindowExW(
+        0,
+        L"COMBOBOX",
+        L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        820,
+        y,
+        105,
+        140,
+        hwnd,
+        reinterpret_cast<HMENU>(IDC_SCAN_TYPE),
+        g_app.instance,
+        nullptr);
+    SendMessageW(g_app.scanType, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    SendMessageW(g_app.scanType, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Reference"));
+    SendMessageW(g_app.scanType, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Object"));
+    SendMessageW(g_app.scanType, CB_SETCURSEL, 1, 0);
 
     y += 34;
     g_app.windowed = make_checkbox(hwnd, IDC_WINDOWED, L"Windowed projection", margin, y, 170, 24, false);
@@ -1285,7 +1315,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             set_text(g_app.output, browse_folder(hwnd, L"Select output folder", get_text(g_app.output)));
             return 0;
         case IDC_START:
-            start_job(JobMode::Scan, L"scan");
+            start_job(JobMode::Scan, selected_scan_type() + L" scan");
             return 0;
         case IDC_PREVIEW:
             start_job(JobMode::PreviewCapture, L"preview scan (not saved)");
