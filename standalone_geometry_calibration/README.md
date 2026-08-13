@@ -64,6 +64,12 @@ ChArUco stereo 기하의 projector 좌표가 일치하는지도 별도로 검증
 2D 보정을 비교하고 p95 오차가 5% 이상 개선될 때만 2차식을 채택하며, 결과를
 `geometry_stage_registration_report.json`에 저장합니다.
 
+등록을 완료하면 geometric 디코더는 각 메인 스캔의 `pattern_000`에서 stage
+ArUco를 다시 검출합니다. 현재 촬영의 marker 인쇄면을 z=0으로 갱신하고, marker
+주변의 평면 픽셀로 전역 절대 위상 이동을 `N × stripe_period_px` 단위로 자동
+보정합니다. 마커가 두 개 미만이거나 정수 주기 보정 후 잔차가 설정 한계를 넘으면
+잘못된 높이를 저장하지 않고 계산을 중단합니다.
+
 각 pose는 projector-black, full-white, X/Y Gray 역상쌍과 X/Y 4-step sine를
 자동 촬영합니다. 체커보드는 `full-white - black` 영상에서 검출하며, 검출 실패나
 너무 작은 보드는 해당 pose를 거부합니다.
