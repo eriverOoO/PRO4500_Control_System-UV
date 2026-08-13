@@ -329,8 +329,8 @@ captures/<scan_id>/
 
 ## ArUco prescan workflow for nominal 180-degree fusion
 
-In the native `StructuredLightControlPanel.exe`, use the **ArUco prescan** controls
-before every 22 + 22 pattern scan:
+The separate **ArUco prescan** controls are retained for diagnostics and manual
+alignment experiments. They are no longer a prerequisite for `Start Scan`.
 
 1. Repetier-Host에서 설정된 COM 포트의 연결을 해제하고, 실제 0 위치에서
    **Capture ArUco 0**을 누릅니다.
@@ -360,16 +360,16 @@ calibration untouched and reports that the current view must be recaptured. A
 successful calculation writes
 `captures/aruco_precalibration/stage_precalibration.json`.
 
-The main 22 + 22 scan is blocked until this JSON exists. Each main scan copies it
-to `<scan_id>/stage_precalibration.json` and records it in `scan_log.json`; pass
-that JSON to the Non-planar_calc decoder as `--fusion-transform`. The latest valid
-calibration remains active for later scans until a new pair is captured and
-calculated.
+`Start Scan` no longer requires a previously saved global precalibration JSON.
+Each scan creates its own `<scan_id>/stage_precalibration.json` from the ArUco
+frames captured at the exact positions used for that scan; pass that JSON to the
+Non-planar_calc decoder as `--fusion-transform`.
 
 메인 스캔은 사전검증 때와 실제 패턴 촬영 때의 스테이지 위치가 달라지는 문제를
-막기 위해 각 각도의 패턴 촬영 직전에 ArUco를 다시 검증합니다. 실제 순서는
-`현재 0° ArUco 재검증 → 0° 패턴 22장 → X250 회전 → 현재 180° ArUco 재검증
-→ 180° 패턴 22장`입니다. `Next Angle`은 X250 이동과 M400 완료 확인 후 촬영
+막기 위해 각 각도의 패턴 촬영 직전에 ArUco를 새로 촬영합니다. 실제 순서는
+`Start Scan → 현재 0° ArUco 촬영·검증 → 0° 패턴 22장 → Next Angle → X250 회전
+→ 현재 180° ArUco 촬영·검증 → 현재 두 ArUco로 정합 계산 → 180° 패턴 22장`입니다.
+`Next Angle`은 X250 이동과 M400 완료 확인 후 촬영
 프로세스를 재개하며, Python 프로세스가 180° ArUco 검증을 통과하기 전에는 첫
 패턴을 투사하지 않습니다.
 

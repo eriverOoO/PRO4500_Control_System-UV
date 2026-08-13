@@ -386,6 +386,10 @@ void handle_job_log(const std::wstring& text) {
             text.find(L"angle=180") != std::wstring::npos ? 180 : 0;
         set_status(L"ArUco Validation Failed");
     }
+    if (text.find(L"[aruco] main-scan validation passed angle=000") != std::wstring::npos) {
+        g_app.stageAtKnownZero = true;
+        g_app.stageAtKnownRotated = false;
+    }
     if (text.find(L"[angle] Waiting") != std::wstring::npos) {
         EnableWindow(g_app.nextAngle, TRUE);
         set_status(L"Waiting Angle");
@@ -921,27 +925,6 @@ void start_job(JobMode mode, const std::wstring& label) {
     }
     if (mode == JobMode::Scan) {
         g_app.mainScanArucoFailedAngle = -1;
-        const std::wstring calibration = path_join(
-            path_join(get_text(g_app.output), L"aruco_precalibration"),
-            L"stage_precalibration.json");
-        if (!file_exists(calibration)) {
-            MessageBoxW(
-                g_app.window,
-                L"ArUco precalibration is not ready. Capture verified 0 and nominal-180 images, then click Calculate Alignment before the 22+22 main scan.",
-                L"ArUco Precalibration Required",
-                MB_ICONWARNING);
-            return;
-        }
-        const std::wstring angles = get_text(g_app.angles);
-        const bool multipleAngles = angles.find(L',') != std::wstring::npos;
-        if (multipleAngles && !g_app.stageAtKnownZero) {
-            MessageBoxW(
-                g_app.window,
-                L"The panel has not verified the current stage as ArUco 0 in this session. Complete Capture ArUco 0, automatic rotated capture/return, and Calculate Alignment before the 0,180 main scan.",
-                L"Stage Zero Not Verified",
-                MB_ICONWARNING);
-            return;
-        }
     }
     if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated || mode == JobMode::ArucoCalculate) {
         apply_led_value(0);

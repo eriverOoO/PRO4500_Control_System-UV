@@ -13,6 +13,7 @@ from structured_light_pc_controller import (
     aruco_marker_observations,
     assess_fpp_quality,
     compare_aruco_pose_to_prescan,
+    create_aruco_alignment,
     merge_hdr_frames,
     load_capture_config,
     select_structured_light_sequence_bracket,
@@ -286,6 +287,57 @@ def test_main_scan_aruco_pose_rejects_position_different_from_prescan() -> None:
 
     assert report["passed"] is False
     assert report["mean_corner_shift_px"] == pytest.approx(12.0)
+
+
+def test_current_scan_aruco_images_create_per_scan_alignment(tmp_path, monkeypatch) -> None:
+    zero = {
+        0: np.array([[10, 10], [20, 10], [20, 20], [10, 20]], dtype=np.float32),
+        2: np.array([[80, 80], [90, 80], [90, 90], [80, 90]], dtype=np.float32),
+    }
+    rotated = {
+        marker_id: np.array([100.0, 100.0], dtype=np.float32) - corners
+        for marker_id, corners in zero.items()
+    }
+    zero_path = tmp_path / "angle_000" / "accepted.png"
+    rotated_path = tmp_path / "angle_180" / "accepted.png"
+    output_path = tmp_path / "stage_precalibration.json"
+    camera_config = tmp_path / "camera_config.json"
+    camera_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "structured_light_pc_controller.read_image",
+        lambda _cv2, path: "zero" if path == zero_path else "rotated",
+    )
+    monkeypatch.setattr(
+        "structured_light_pc_controller.require_aruco_markers",
+        lambda _cv2, image, **_kwargs: (
+            (zero, [0, 2]) if image == "zero" else (rotated, [0, 2])
+        ),
+    )
+    args = type(
+        "Args",
+        (),
+        {
+            "aruco_ids": "0,1,2,3",
+            "aruco_dictionary": "DICT_4X4_50",
+            "aruco_ransac_threshold_px": 3.0,
+            "aruco_intended_rotation_deg": 180.0,
+            "aruco_stage_command_value": 250.0,
+            "camera_config": camera_config,
+        },
+    )()
+
+    payload = create_aruco_alignment(
+        cv2,
+        args=args,
+        zero_path=zero_path,
+        rotated_path=rotated_path,
+        output_path=output_path,
+    )
+
+    assert output_path.is_file()
+    assert payload["transform_direction"] == "180_to_0"
+    assert payload["aruco"]["marker_ids"] == [0, 2]
+    assert payload["stage_precalibration"]["actual_rotation_magnitude_deg"] == pytest.approx(180.0)
 
 
 def test_aruco_stage_geometry_uses_configured_stage_cross_coordinates(tmp_path) -> None:
