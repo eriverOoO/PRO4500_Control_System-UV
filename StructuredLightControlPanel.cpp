@@ -23,6 +23,7 @@
 #include "GUI/dlpc350_api.h"
 #include "GUI/dlpc350_usb.h"
 #include "projector_usb_diagnostics.h"
+#include "external/repetier-stage-controller/include/repetier_stage_controller.h"
 
 namespace {
 
@@ -31,6 +32,7 @@ constexpr UINT WM_APP_LOG = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
 constexpr UINT WM_APP_PATTERN_DONE = WM_APP + 3;
 constexpr UINT WM_APP_PREVIEW_DONE = WM_APP + 4;
+constexpr UINT WM_APP_STAGE_DONE = WM_APP + 5;
 constexpr UINT_PTR kPreviewRefreshTimer = 1;
 
 enum ControlId {
@@ -74,6 +76,10 @@ enum ControlId {
     IDC_ARUCO_CAPTURE_ROTATED,
     IDC_ARUCO_CALCULATE,
     IDC_ARUCO_EXPOSURE,
+    IDC_STAGE_PORT,
+    IDC_STAGE_SPEED,
+    IDC_STAGE_CONNECT,
+    IDC_STAGE_ROTATE,
 };
 
 enum class JobMode {
@@ -86,6 +92,20 @@ enum class JobMode {
     ArucoCaptureZero,
     ArucoCaptureRotated,
     ArucoCalculate,
+};
+
+enum class StageAction {
+    ConnectOnly,
+    RotateOnly,
+    RotateThenJob,
+    RotateThenAdvance,
+    ReturnToZero,
+};
+
+struct StageOperationResult {
+    bool success{};
+    StageAction action = StageAction::ConnectOnly;
+    std::wstring message;
 };
 
 struct AppState {
@@ -131,6 +151,10 @@ struct AppState {
     HWND arucoCaptureRotated{};
     HWND arucoCalculate{};
     HWND arucoExposure{};
+    HWND stagePort{};
+    HWND stageSpeed{};
+    HWND stageConnect{};
+    HWND stageRotate{};
     PROCESS_INFORMATION jobProcess{};
     PROCESS_INFORMATION previewProcess{};
     PROCESS_INFORMATION patternUpdateProcess{};
@@ -138,6 +162,13 @@ struct AppState {
     std::atomic_bool jobRunning{false};
     std::atomic_bool previewRunning{false};
     std::atomic_bool patternUpdateRunning{false};
+    std::atomic_bool stageBusy{false};
+    repetier_stage::Controller stageController;
+    StageAction stageAction = StageAction::ConnectOnly;
+    JobMode stagePendingJobMode = JobMode::Scan;
+    std::wstring stagePendingJobLabel;
+    bool stageAtKnownZero = false;
+    bool stageAtKnownRotated = false;
     int patternScaleBeforeUpdate = -1;
     HBITMAP previewBitmap{};
     FILETIME previewLastWrite{};
@@ -195,6 +226,7 @@ std::wstring gui_preview_file() {
 }
 
 void set_text(HWND hwnd, const std::wstring& value);
+void start_job(JobMode mode, const std::wstring& label);
 
 void refresh_gui_preview() {
     if (!g_app.previewImage) return;
@@ -362,6 +394,92 @@ void handle_job_log(const std::wstring& text) {
     if (text.find(L"[project] pattern=") != std::wstring::npos) {
         set_status(L"Projecting");
     }
+}
+
+void set_stage_controls(bool busy) {
+    EnableWindow(g_app.stagePort, !busy && !g_app.jobRunning.load());
+    EnableWindow(g_app.stageSpeed, !busy && !g_app.jobRunning.load());
+    EnableWindow(g_app.stageConnect, !busy && !g_app.jobRunning.load());
+    EnableWindow(g_app.stageRotate, !busy && !g_app.jobRunning.load());
+    if (busy) set_status(L"Stage Moving");
+}
+
+bool read_stage_config(repetier_stage::Config& config, std::wstring& error) {
+    config.port = get_text(g_app.stagePort);
+    if (config.port.empty()) {
+        error = L"Stage COM port is required.";
+        return false;
+    }
+    const std::wstring speedText = get_text(g_app.stageSpeed);
+    try {
+        size_t parsed = 0;
+        config.feedrate = std::stoi(speedText, &parsed);
+        if (parsed != speedText.size()) throw std::invalid_argument("trailing text");
+    } catch (...) {
+        error = L"Stage feedrate must be a whole number from 1 to 1500.";
+        return false;
+    }
+    config.baudRate = 115200;
+    config.motionSettleMs = 1000;
+    return repetier_stage::validate_feedrate(config.feedrate, error);
+}
+
+void stage_operation_thread(repetier_stage::Config config, StageAction action) {
+    auto* result = new StageOperationResult{};
+    result->action = action;
+    std::wstring error;
+    bool success = g_app.stageController.connect_and_initialize(config, error);
+    if (success && action != StageAction::ConnectOnly) {
+        success = g_app.stageController.rotate_half(error);
+    }
+    result->success = success;
+    result->message = success ? L"Stage command completed." : error;
+    PostMessageW(
+        g_app.window,
+        WM_APP_STAGE_DONE,
+        0,
+        reinterpret_cast<LPARAM>(result));
+}
+
+bool start_stage_operation(StageAction action) {
+    if (g_app.stageBusy.exchange(true)) return false;
+    repetier_stage::Config config;
+    std::wstring error;
+    if (!read_stage_config(config, error)) {
+        g_app.stageBusy.store(false);
+        MessageBoxW(g_app.window, error.c_str(), L"Invalid Stage Setting", MB_ICONWARNING);
+        return false;
+    }
+    g_app.stageAction = action;
+    set_stage_controls(true);
+    append_log(
+        g_app.log,
+        action == StageAction::ConnectOnly
+            ? L"\r\n[stage] Connecting COM and sending M115, M17, G91...\r\n"
+            : L"\r\n[stage] Sending fixed half rotation G1 X250 (F <= 1500), then waiting for M400...\r\n");
+    std::thread(stage_operation_thread, config, action).detach();
+    return true;
+}
+
+void rotate_then_start_job(JobMode mode, const std::wstring& label) {
+    if (g_app.jobRunning.load() || g_app.stageBusy.load()) return;
+    if (g_app.stageAtKnownRotated) {
+        // A failed rotated ArUco capture leaves the stage at the rotated
+        // position. Retry the camera verification without rotating again.
+        start_job(mode, label);
+        return;
+    }
+    if (!g_app.stageAtKnownZero) {
+        MessageBoxW(
+            g_app.window,
+            L"Capture and verify ArUco 0 first. The panel will then rotate X250 before the rotated capture.",
+            L"ArUco 0 Required",
+            MB_ICONWARNING);
+        return;
+    }
+    g_app.stagePendingJobMode = mode;
+    g_app.stagePendingJobLabel = label;
+    start_stage_operation(StageAction::RotateThenJob);
 }
 
 HWND make_label(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
@@ -605,6 +723,10 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
     EnableWindow(g_app.stop, running);
+    EnableWindow(g_app.stagePort, !running && !g_app.stageBusy.load());
+    EnableWindow(g_app.stageSpeed, !running && !g_app.stageBusy.load());
+    EnableWindow(g_app.stageConnect, !running && !g_app.stageBusy.load());
+    EnableWindow(g_app.stageRotate, !running && !g_app.stageBusy.load());
     if (!running) EnableWindow(g_app.nextAngle, FALSE);
 }
 
@@ -786,6 +908,16 @@ void start_job(JobMode mode, const std::wstring& label) {
                 g_app.window,
                 L"ArUco precalibration is not ready. Capture verified 0 and nominal-180 images, then click Calculate Alignment before the 22+22 main scan.",
                 L"ArUco Precalibration Required",
+                MB_ICONWARNING);
+            return;
+        }
+        const std::wstring angles = get_text(g_app.angles);
+        const bool multipleAngles = angles.find(L',') != std::wstring::npos;
+        if (multipleAngles && !g_app.stageAtKnownZero) {
+            MessageBoxW(
+                g_app.window,
+                L"The panel has not verified the current stage as ArUco 0 in this session. Complete Capture ArUco 0, automatic rotated capture/return, and Calculate Alignment before the 0,180 main scan.",
+                L"Stage Zero Not Verified",
                 MB_ICONWARNING);
             return;
         }
@@ -995,6 +1127,17 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"ArUco exposure us", 545, y + 4, 120, 22);
     g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 670, y, 100, 24);
 
+    y += 34;
+    make_label(hwnd, L"Rotation stage", margin, y + 4, 95, 22);
+    make_label(hwnd, L"Port", 115, y + 4, 35, 22);
+    g_app.stagePort = make_edit(hwnd, IDC_STAGE_PORT, L"COM3", 150, y, 70, 24);
+    make_label(hwnd, L"Speed F", 235, y + 4, 60, 22);
+    g_app.stageSpeed = make_edit(hwnd, IDC_STAGE_SPEED, L"1500", 295, y, 70, 24);
+    SendMessageW(g_app.stageSpeed, EM_SETLIMITTEXT, 4, 0);
+    make_label(hwnd, L"(max 1500; X250 fixed)", 375, y + 4, 160, 22);
+    g_app.stageConnect = make_button(hwnd, IDC_STAGE_CONNECT, L"Connect Stage", 545, y, 125, 28);
+    g_app.stageRotate = make_button(hwnd, IDC_STAGE_ROTATE, L"Rotate X250", 685, y, 125, 28);
+
     y += 42;
     make_label(hwnd, L"Patterns", margin, y + 4, 80, 22);
     const std::wstring defaultPatternDirectory =
@@ -1066,7 +1209,7 @@ void build_ui(HWND hwnd) {
     make_label(hwnd, L"Monitor", 185, y + 4, 60, 22);
     g_app.monitor = make_edit(hwnd, IDC_MONITOR, L"1", 250, y, 60, 24);
     make_label(hwnd, L"Angles", 340, y + 4, 55, 22);
-    g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0", 395, y, 145, 24);
+    g_app.angles = make_edit(hwnd, IDC_ANGLES, L"0,180", 395, y, 145, 24);
     make_label(hwnd, L"Settle ms", 575, y + 4, 75, 22);
     g_app.settle = make_edit(hwnd, IDC_SETTLE, L"1000", 655, y, 80, 24);
 
@@ -1151,7 +1294,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             start_job(JobMode::ArucoCaptureZero, L"ArUco 0 prescan");
             return 0;
         case IDC_ARUCO_CAPTURE_ROTATED:
-            start_job(JobMode::ArucoCaptureRotated, L"ArUco nominal-180 prescan");
+            rotate_then_start_job(
+                JobMode::ArucoCaptureRotated,
+                L"ArUco nominal-180 prescan");
             return 0;
         case IDC_ARUCO_CALCULATE:
             start_job(JobMode::ArucoCalculate, L"ArUco alignment calculation");
@@ -1169,7 +1314,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             stop_job();
             return 0;
         case IDC_NEXT_ANGLE:
-            signal_next_angle();
+            if (!g_app.stageBusy.load()) {
+                EnableWindow(g_app.nextAngle, FALSE);
+                start_stage_operation(StageAction::RotateThenAdvance);
+            }
+            return 0;
+        case IDC_STAGE_CONNECT:
+            start_stage_operation(StageAction::ConnectOnly);
+            return 0;
+        case IDC_STAGE_ROTATE:
+            if (!g_app.jobRunning.load()) start_stage_operation(StageAction::RotateOnly);
             return 0;
         case IDC_APPLY_LED:
             apply_led_value(static_cast<int>(SendMessageW(g_app.ledSlider, TBM_GETPOS, 0, 0)));
@@ -1205,6 +1359,77 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         }
         return 0;
     }
+    case WM_APP_STAGE_DONE: {
+        auto* result = reinterpret_cast<StageOperationResult*>(lparam);
+        if (!result) return 0;
+        g_app.stageBusy.store(false);
+        set_stage_controls(false);
+        append_log(
+            g_app.log,
+            result->success
+                ? L"\r\n[stage] " + result->message + L"\r\n"
+                : L"\r\n[stage] ERROR: " + result->message + L"\r\n");
+        if (!result->success) {
+            set_status(L"Stage Error");
+            if (result->action == StageAction::RotateThenAdvance) {
+                EnableWindow(g_app.nextAngle, TRUE);
+            }
+            MessageBoxW(
+                hwnd,
+                result->message.c_str(),
+                L"Rotation Stage Error",
+                MB_ICONERROR);
+            delete result;
+            return 0;
+        }
+
+        switch (result->action) {
+        case StageAction::ConnectOnly:
+            set_status(L"Stage Ready");
+            break;
+        case StageAction::RotateOnly:
+            if (g_app.stageAtKnownZero) {
+                g_app.stageAtKnownZero = false;
+                g_app.stageAtKnownRotated = true;
+            } else if (g_app.stageAtKnownRotated) {
+                g_app.stageAtKnownRotated = false;
+                g_app.stageAtKnownZero = true;
+            }
+            set_status(L"Stage Rotated");
+            break;
+        case StageAction::RotateThenJob: {
+            g_app.stageAtKnownZero = false;
+            g_app.stageAtKnownRotated = true;
+            const JobMode mode = g_app.stagePendingJobMode;
+            const std::wstring label = g_app.stagePendingJobLabel;
+            g_app.stagePendingJobLabel.clear();
+            start_job(mode, label);
+            break;
+        }
+        case StageAction::RotateThenAdvance:
+            if (g_app.stageAtKnownZero) {
+                g_app.stageAtKnownZero = false;
+                g_app.stageAtKnownRotated = true;
+            } else if (g_app.stageAtKnownRotated) {
+                g_app.stageAtKnownRotated = false;
+                g_app.stageAtKnownZero = true;
+            }
+            signal_next_angle();
+            break;
+        case StageAction::ReturnToZero:
+            g_app.stageAtKnownZero = true;
+            g_app.stageAtKnownRotated = false;
+            set_status(L"Stage Returned to 0");
+            MessageBoxW(
+                hwnd,
+                L"Rotated ArUco capture completed and the stage returned by X250. Calculate Alignment, then start the main scan.",
+                L"Stage Returned",
+                MB_ICONINFORMATION);
+            break;
+        }
+        delete result;
+        return 0;
+    }
     case WM_APP_DONE: {
         DWORD exitCode = static_cast<DWORD>(wparam);
         if (g_app.jobProcess.hThread) CloseHandle(g_app.jobProcess.hThread);
@@ -1216,6 +1441,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
         set_status(exitCode == 0 ? L"Finished" : L"Failed");
+        if (g_app.jobLabel == L"ArUco 0 prescan" && exitCode == 0) {
+            g_app.stageAtKnownZero = true;
+            g_app.stageAtKnownRotated = false;
+        }
         const bool isArucoJob = g_app.jobLabel.find(L"ArUco") != std::wstring::npos;
         if (isArucoJob && exitCode != 0) {
             MessageBoxW(
@@ -1223,6 +1452,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 L"ArUco verification or alignment failed. The previous valid calibration was kept. Check marker visibility, focus, and exposure, then recapture the failed 0 or nominal-180 view.",
                 L"Recapture ArUco Prescan",
                 MB_ICONWARNING);
+        } else if (g_app.jobLabel == L"ArUco nominal-180 prescan") {
+            if (exitCode == 0) {
+                append_log(
+                    g_app.log,
+                    L"\r\n[stage] Rotated ArUco capture passed. Returning by fixed X250...\r\n");
+                start_stage_operation(StageAction::ReturnToZero);
+            }
         } else if (g_app.jobLabel == L"ArUco alignment calculation") {
             MessageBoxW(
                 hwnd,
@@ -1280,6 +1516,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     }
     case WM_CLOSE:
+        if (g_app.stageBusy.load()) {
+            MessageBoxW(
+                hwnd,
+                L"Wait for the rotation-stage command to finish before closing the controller.",
+                L"Stage Command Running",
+                MB_ICONINFORMATION);
+            return 0;
+        }
         if (g_app.jobRunning.load()) {
             if (MessageBoxW(hwnd, L"A job is running. Stop it and exit?", L"Exit", MB_YESNO | MB_ICONQUESTION) != IDYES) return 0;
         }
@@ -1300,6 +1544,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, kPreviewRefreshTimer);
+        g_app.stageController.disconnect();
         if (g_app.previewBitmap) {
             DeleteObject(g_app.previewBitmap);
             g_app.previewBitmap = nullptr;
@@ -1336,7 +1581,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         0, kAppClass, L"PRO4500 XIMEA UV Scan Controller",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 800,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 850,
         nullptr, nullptr, instance, nullptr);
 
     if (!hwnd) return 1;
