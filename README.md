@@ -332,11 +332,24 @@ captures/<scan_id>/
 In the native `StructuredLightControlPanel.exe`, use the **ArUco prescan** controls
 before every 22 + 22 pattern scan:
 
-1. Turn the stage to 0 and click **Capture ArUco 0**.
-2. Send the stage's fixed program command value `250` (this is **not** an angle;
-   it is intended to produce a physical 180-degree rotation), then click
-   **Capture ArUco rotated**.
-3. Click **Calculate Alignment**.
+1. Repetier-Host에서 설정된 COM 포트의 연결을 해제하고, 실제 0 위치에서
+   **Capture ArUco 0**을 누릅니다.
+2. **Capture ArUco rotated**를 누릅니다. 패널이 포함된 조직 저장소
+   `lee-lab-skku/repetier-stage-controller`를 통해 COM 포트에 연결하고,
+   `M115 → M17 → G91`로 세션을 초기화합니다. 이어서 고정 반회전 명령
+   `G1 X250 F1500`을 전송하고 `M400` 이동 완료를 확인한 뒤 rotated 영상을
+   촬영합니다.
+3. rotated 촬영이 성공하면 패널이 `G1 X250`을 한 번 더 전송해 nominal 0
+   위치로 자동 복귀합니다. 이후 **Calculate Alignment**를 누릅니다.
+4. `0,180` 메인 스캔을 시작합니다. **Next Angle** 버튼이 활성화되면 버튼을
+   누릅니다. 패널은 먼저 X250 회전을 완료하고 안정화 시간까지 기다린 뒤에만
+   Python 촬영 프로세스에 다음 각도 촬영 신호를 전달합니다.
+
+`F1500`은 변경할 수 없는 안전 상한입니다. 더 낮은 속도는 사용할 수 있지만,
+1500을 초과하는 값은 스테이지 모듈이 COM 포트를 열기 전에 거부합니다.
+Repetier-Host와 패널은 COM3를 동시에 사용할 수 없습니다. 연결 실패, 펌웨어
+오류, 응답 시간 초과 또는 이동 실패가 발생하면 촬영 및 Next Angle 진행 신호를
+전송하지 않습니다.
 
 Both captures are made with the Blue LED forced to 0. The controller uses all four
 configured markers when they are visible. If the camera crops two markers, it also

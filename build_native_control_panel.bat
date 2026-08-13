@@ -52,8 +52,9 @@ if errorlevel 1 (
 
 echo [2/2] Building StructuredLightControlPanel.exe...
 "%MINGW%\g++.exe" -std=c++17 -O2 -Wall -Wextra -municode -mwindows ^
-  -I"%GUI_PARENT%" -I"%GUI_DIR%" -I"%GUI_DIR%\hidapi-master\hidapi" ^
+  -I"%GUI_PARENT%" -I"%GUI_DIR%" -I"%GUI_DIR%\hidapi-master\hidapi" -I"external\repetier-stage-controller\include" ^
   StructuredLightControlPanel.cpp ^
+  external\repetier-stage-controller\src\repetier_stage_controller.cpp ^
   dlpc350_usb_standalone.cpp ^
   "%GUI_DIR%\dlpc350_api.cpp" ^
   "%GUI_DIR%\dlpc350_common.cpp" ^
