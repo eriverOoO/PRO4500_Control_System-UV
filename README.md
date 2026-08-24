@@ -87,6 +87,98 @@ Git에는 원본 100% 소스인 `generated_patterns1/`만 유지합니다. 따�
 처음 실행할 때는 `Height (%)` 기본값 `100`으로 `Apply Height`를 한 번 실행해 로컬
 투사용 이미지를 만든 뒤, 원하는 가로 비율로 다시 조절하면 됩니다.
 
+## 새 Windows PC 초기 설정
+
+아래 절차는 **새 PC에서 이 저장소를 처음 실행하는 경우**의 전체 순서입니다.
+이 저장소에는 빌드 산출물, Python 가상환경, XIMEA SDK, 실제 캡처 데이터가
+포함되지 않습니다. 소스와 재현 가능한 설정만 Git으로 관리합니다.
+
+### 1. 사전 설치
+
+- Windows 10 또는 11
+- [Git for Windows](https://git-scm.com/download/win)
+- [MSYS2](https://www.msys2.org/) 및 MinGW-w64 C/C++ 컴파일러
+- XIMEA Windows Software Package (실제 XIMEA 카메라를 사용할 때)
+
+MSYS2 설치 후 **MSYS2 UCRT64** 셸에서 다음을 실행합니다. 설치가 끝난 뒤
+셸을 한 번 닫았다가 다시 열어 주세요.
+
+```bash
+pacman -Syu
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain
+```
+
+`build_native_control_panel.bat`는 `C:\msys64\ucrt64\bin`을 자동으로 찾아
+컴파일러를 사용합니다. 다른 MinGW-w64 설치를 사용한다면 `g++.exe`가 `PATH`에
+있거나 `MINGW` 환경 변수가 해당 `bin` 폴더를 가리켜야 합니다.
+
+### 2. 저장소와 서브모듈 받기
+
+PowerShell에서 원하는 작업 폴더로 이동한 뒤, 반드시 `--recurse-submodules`를
+포함해 클론합니다. `GUI/`와 `repetier-stage-controller/`는 빌드에 필요한
+Git 서브모듈입니다.
+
+```powershell
+git clone --recurse-submodules https://github.com/lee-lab-skku/PRO4500_CONTROL_ximea.git
+cd PRO4500_CONTROL_ximea
+```
+
+이미 일반 클론을 했다면 다음 명령으로 서브모듈을 받습니다.
+
+```powershell
+git submodule update --init --recursive
+```
+
+### 3. XIMEA SDK 설치 및 카메라 확인
+
+실제 카메라를 쓸 경우 XIMEA Windows Software Package에서 USB/PCIe 드라이버와
+xiAPI 런타임을 설치합니다. 설치 후 XIMEA CamTool 또는 xiCOP에서 카메라가
+인식되는지 먼저 확인하세요. `camera_config.json`의
+`camera.ximea.dll_path`를 비워 두면 일반 설치 경로와 시스템 `PATH`에서
+`xiapi64.dll`을 찾습니다. 자동 검색이 안 되면 해당 항목에 DLL의 절대 경로를
+설정하거나 `XIMEA_XIAPI_DLL` 환경 변수를 지정하세요.
+
+카메라 없이 UI·저장 흐름을 확인하려면 `camera_config.json`의
+`camera.provider` 값을 `mock`으로 설정하면 됩니다.
+
+### 4. Python 환경 생성
+
+다음 스크립트는 Python 3.12.10을 프로젝트의 `.toolchains/`에 설치하고,
+`.venv-pc/` 가상환경과 필수 패키지를 준비합니다. 인터넷 연결이 필요합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\prepare_pc_python_env.ps1
+```
+
+### 5. 제어 패널 빌드 및 첫 실행
+
+프로젝트 루트에서 다음을 실행합니다.
+
+```powershell
+.\build_native_control_panel.bat
+.\run_control_panel.bat
+```
+
+처음 실행한 뒤 제어 패널의 `Patterns`를 `generated_patterns_centered`로 지정하고,
+`Height (%)`를 원하는 값으로 설정한 다음 **Apply Height**를 한 번 누르세요.
+이 작업으로 로컬 투사용 22개 패턴과 `pattern_profile.json`이 생성됩니다.
+
+### 6. 설치 확인
+
+Python 및 카메라 연결을 다음과 같이 확인할 수 있습니다.
+
+```powershell
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --help
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --check-camera --camera-provider ximea
+```
+
+XIMEA 장비가 아직 연결되지 않았다면 두 번째 명령 대신 mock 카메라로 기본 흐름을
+검사할 수 있습니다.
+
+```powershell
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py --single-capture --camera-provider mock
+```
+
 ## XIMEA SDK 요구 사항
 
 다음 항목이 포함된 XIMEA Windows Software Package를 설치해야 합니다.
