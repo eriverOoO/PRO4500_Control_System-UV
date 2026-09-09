@@ -5,7 +5,6 @@ from __future__ import annotations
 import ctypes
 import json
 import queue
-import shutil
 import sys
 import threading
 import time
@@ -34,8 +33,10 @@ from calibration_core import (  # noqa: E402
     estimate_projector_corners_from_local_homographies,
     estimate_stage_plane_from_aruco,
     generate_patterns,
+    read_image,
     solve_geometry,
     strict_checkerboard_correspondence_mask,
+    write_png,
 )
 
 
@@ -89,13 +90,26 @@ class ProjectorWindow:
         if not 0 <= monitor_index < len(monitors):
             raise ValueError(f"Projector monitor index {monitor_index} is invalid; detected {len(monitors)} monitors")
         self.monitor = monitors[monitor_index]
-        if (self.monitor.width, self.monitor.height) != (profile.width, profile.height):
-            raise ValueError(
-                "Projector monitor resolution does not match the calibration pattern: "
-                f"monitor={self.monitor.width}x{self.monitor.height}, pattern={profile.width}x{profile.height}. "
-                "Set Windows scaling to 100% and update calibration_config.json."
-            )
+        self.profile = profile
         self.name = "Standalone Geometry Calibration Projection"
+
+    def description(self) -> str:
+        return (
+            f"프로젝터 패턴 {self.profile.width}x{self.profile.height} -> "
+            f"모니터 {self.monitor.width}x{self.monitor.height} (최근접 보간, 종횡비 유지)"
+        )
+
+    def render(self, image: np.ndarray) -> np.ndarray:
+        image_h, image_w = image.shape[:2]
+        scale = min(self.monitor.width / image_w, self.monitor.height / image_h)
+        out_w = max(1, int(round(image_w * scale)))
+        out_h = max(1, int(round(image_h * scale)))
+        resized = cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+        canvas = np.zeros((self.monitor.height, self.monitor.width), dtype=resized.dtype)
+        x = (self.monitor.width - out_w) // 2
+        y = (self.monitor.height - out_h) // 2
+        canvas[y : y + out_h, x : x + out_w] = resized
+        return canvas
 
     def open(self) -> None:
         cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
@@ -110,7 +124,7 @@ class ProjectorWindow:
             )
 
     def show(self, image: np.ndarray) -> None:
-        cv2.imshow(self.name, image)
+        cv2.imshow(self.name, self.render(image))
         cv2.waitKey(1)
 
     def close(self) -> None:
@@ -140,9 +154,17 @@ class CalibrationCapture:
             period_px=int(projector["fringe_period_px"]),
         )
 
-    def create_session(self, session: Path) -> None:
+    def create_session(self, session: Path) -> Path:
+        requested_session = session
         if session.exists() and any(session.iterdir()):
-            raise ValueError(f"Session folder is not empty: {session}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_name = f"{session.name}_{timestamp}"
+            session = session.with_name(base_name)
+            suffix = 2
+            while session.exists():
+                session = session.with_name(f"{base_name}_{suffix}")
+                suffix += 1
+            self.log(f"기존 세션을 보존하고 새 폴더를 사용합니다: {requested_session} -> {session}")
         session.mkdir(parents=True, exist_ok=True)
         pattern_manifest = generate_patterns(session / "patterns", self.profile)
         checkerboard = self.config["checkerboard"]
@@ -185,6 +207,7 @@ class CalibrationCapture:
         (session / "rejected").mkdir()
         self.log(f"세션 준비 완료: {session}")
         self.log("패턴을 모두 사전 생성했습니다. 체커보드를 자유로운 위치/거리/기울기로 놓으세요.")
+        return session
 
     def _open_camera(self) -> CameraInterface:
         settings = CameraProvider.load_settings(self.config_path)
@@ -228,9 +251,6 @@ class CalibrationCapture:
     def capture_next_pose(self, session: Path) -> None:
         manifest_path = session / "session_manifest.json"
         manifest = read_json(manifest_path)
-        if manifest.get("rejected_poses"):
-            manifest["rejected_poses"] = []
-            write_json(manifest_path, manifest)
         existing_numbers: list[int] = []
         for parent in (session / "poses", session / "rejected"):
             for path in parent.glob("pose_*"):
@@ -240,17 +260,20 @@ class CalibrationCapture:
                     continue
         next_number = max(existing_numbers, default=0) + 1
         pose_id = f"pose_{next_number:03d}"
-        temporary = session / "rejected" / pose_id
+        # Keep each capture attempt in its original directory. Some managed or
+        # synchronized Windows folders allow creation but deny rename/delete.
+        temporary = session / "poses" / pose_id
         temporary.mkdir(parents=True, exist_ok=False)
         camera: CameraInterface | None = None
         projector: ProjectorWindow | None = None
         try:
             camera = self._open_camera()
             projector = ProjectorWindow(int(self.config["projector"]["monitor_index"]), self.profile)
+            self.log(projector.description())
             projector.open()
             patterns = session / "patterns"
-            black_pattern = cv2.imread(str(patterns / "reference_black.png"), cv2.IMREAD_GRAYSCALE)
-            white_pattern = cv2.imread(str(patterns / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
+            black_pattern = read_image(patterns / "reference_black.png", cv2.IMREAD_GRAYSCALE)
+            white_pattern = read_image(patterns / "reference_white.png", cv2.IMREAD_GRAYSCALE)
             if black_pattern is None or white_pattern is None:
                 raise ValueError("Generated black/white patterns are missing")
             capture_exposure_us, capture_gain_db = self._capture_exposure()
@@ -262,9 +285,7 @@ class CalibrationCapture:
                 f"{pose_id}: ChArUco detection",
             )
             detection_black = self._settle_and_capture(projector, camera, black_pattern)
-            cv2.imwrite(
-                str(temporary / "charuco_detection_exposure.png"), detection_black
-            )
+            write_png(temporary / "charuco_detection_exposure.png", detection_black)
             self._set_camera_exposure(
                 camera,
                 capture_exposure_us,
@@ -274,8 +295,8 @@ class CalibrationCapture:
             self.log(f"{pose_id}: black/white 기준 프레임 촬영")
             black = self._settle_and_capture(projector, camera, black_pattern)
             white = self._settle_and_capture(projector, camera, white_pattern)
-            cv2.imwrite(str(temporary / "reference_black.png"), black)
-            cv2.imwrite(str(temporary / "reference_white.png"), white)
+            write_png(temporary / "reference_black.png", black)
+            write_png(temporary / "reference_white.png", white)
             configured_board = self.config["checkerboard"]
             if manifest["checkerboard"].get("target_type") != "charuco":
                 raise ValueError("기존 체커보드 세션은 ChArUco 촬영과 호환되지 않습니다. 새 세션을 생성하세요.")
@@ -284,9 +305,9 @@ class CalibrationCapture:
             )
             report["detection_exposure_us"] = detection_exposure_us
             report["structured_light_exposure_us"] = capture_exposure_us
-            cv2.imwrite(str(temporary / "charuco_response.png"), detection)
-            cv2.imwrite(
-                str(temporary / "charuco_detection.png"),
+            write_png(temporary / "charuco_response.png", detection)
+            write_png(
+                temporary / "charuco_detection.png",
                 draw_charuco_detection(detection, corners, charuco_ids),
             )
             minimum_area = float(self.config["capture"]["minimum_board_area_ratio"])
@@ -312,12 +333,11 @@ class CalibrationCapture:
                 self.log(f"{pose_id}: {axis.upper()}축 {len(sequence)}개 패턴 자동 촬영")
                 for index, entry in enumerate(sequence, start=1):
                     source = patterns / axis / entry["file"]
-                    projected = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE)
+                    projected = read_image(source, cv2.IMREAD_GRAYSCALE)
                     if projected is None:
                         raise ValueError(f"Pattern is missing: {source}")
                     frame = self._settle_and_capture(projector, camera, projected)
-                    if not cv2.imwrite(str(axis_output / entry["file"]), frame):
-                        raise RuntimeError(f"Could not save captured pattern: {entry['file']}")
+                    write_png(axis_output / entry["file"], frame)
                     self.log(f"{pose_id}: {axis.upper()} {index}/{len(sequence)}")
             self.log(f"{pose_id}: 촬영 중 보정판 움직임 확인")
             self._set_camera_exposure(
@@ -329,17 +349,17 @@ class CalibrationCapture:
             final_detection_black = self._settle_and_capture(
                 projector, camera, black_pattern
             )
-            cv2.imwrite(
-                str(temporary / "charuco_detection_exposure_final.png"),
+            write_png(
+                temporary / "charuco_detection_exposure_final.png",
                 final_detection_black,
             )
             final_corners, final_ids, final_detection, final_report = detect_charuco(
                 final_detection_black, final_detection_black, configured_board
             )
             final_report["detection_exposure_us"] = detection_exposure_us
-            cv2.imwrite(str(temporary / "charuco_response_final.png"), final_detection)
-            cv2.imwrite(
-                str(temporary / "charuco_detection_final.png"),
+            write_png(temporary / "charuco_response_final.png", final_detection)
+            write_png(
+                temporary / "charuco_detection_final.png",
                 draw_charuco_detection(final_detection, final_corners, final_ids),
             )
             motion_limit_px = float(
@@ -439,9 +459,7 @@ class CalibrationCapture:
                     "판을 완전히 고정하고 위치나 각도를 바꿔 다시 촬영하세요."
                 )
             np.save(temporary / "strict_correspondence_mask.npy", strict_mask)
-            accepted = session / "poses" / pose_id
-            temporary.replace(accepted)
-            relative = accepted.relative_to(session).as_posix()
+            relative = temporary.relative_to(session).as_posix()
             manifest["captured_poses"].append(
                 {
                     "pose_id": pose_id,
@@ -458,9 +476,17 @@ class CalibrationCapture:
                 f"(엄격 검사 정상 대응점 {strict_corner_count}개). "
                 "자세를 바꾼 뒤 다시 촬영하세요."
             )
-        except Exception:
+        except Exception as exc:
             if temporary.exists():
-                shutil.rmtree(temporary)
+                manifest.setdefault("rejected_poses", []).append(
+                    {
+                        "pose_id": pose_id,
+                        "captured_at": datetime.now().isoformat(timespec="seconds"),
+                        "relative_dir": temporary.relative_to(session).as_posix(),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                write_json(manifest_path, manifest)
             raise
         finally:
             if camera is not None:
@@ -508,14 +534,15 @@ class CalibrationCapture:
         try:
             camera = self._open_camera()
             projector = ProjectorWindow(int(self.config["projector"]["monitor_index"]), self.profile)
+            self.log(projector.description())
             projector.open()
             patterns = session / "patterns"
-            black_pattern = cv2.imread(str(patterns / "reference_black.png"), cv2.IMREAD_GRAYSCALE)
-            white_pattern = cv2.imread(str(patterns / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
+            black_pattern = read_image(patterns / "reference_black.png", cv2.IMREAD_GRAYSCALE)
+            white_pattern = read_image(patterns / "reference_white.png", cv2.IMREAD_GRAYSCALE)
             black = self._settle_and_capture(projector, camera, black_pattern)
             white = self._settle_and_capture(projector, camera, white_pattern)
-            cv2.imwrite(str(output / "projector_black.png"), black)
-            cv2.imwrite(str(output / "projector_white.png"), white)
+            write_png(output / "projector_black.png", black)
+            write_png(output / "projector_white.png", white)
             difference = cv2.normalize(cv2.subtract(white, black), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
             stage = self.config["stage_aruco"]
             last_error: Exception | None = None
@@ -529,7 +556,7 @@ class CalibrationCapture:
                         [int(value) for value in stage["marker_ids"]],
                     )
                     plane["source_image"] = name
-                    cv2.imwrite(str(output / "aruco_detection.png"), preview)
+                    write_png(output / "aruco_detection.png", preview)
                     calibration["stage_plane"] = plane
                     write_json(calibration_path, calibration)
                     write_json(output / "stage_plane.json", plane)
@@ -612,7 +639,8 @@ class CalibrationApp:
             self.session_var.set(selected)
 
     def _prepare(self) -> None:
-        self.worker.create_session(self._session())
+        session = self.worker.create_session(self._session())
+        self.messages.put(("session", str(session)))
 
     def _capture(self) -> None:
         self.worker.capture_next_pose(self._session())
@@ -649,6 +677,8 @@ class CalibrationApp:
                 kind, message = self.messages.get_nowait()
                 if kind == "log":
                     self._append(message + "\n")
+                elif kind == "session":
+                    self.session_var.set(message)
                 elif kind == "error":
                     self._append("오류: " + message + "\n")
                     messagebox.showerror("칼리브레이션 오류", message)

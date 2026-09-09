@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from standalone_geometry_calibration.app import CalibrationCapture
+from standalone_geometry_calibration.app import CalibrationCapture, Monitor, ProjectorWindow
 from standalone_geometry_calibration.calibration_core import (
     PatternProfile,
     checkerboard_grid_candidates,
@@ -19,6 +19,7 @@ from standalone_geometry_calibration.calibration_core import (
     estimate_projector_corners_from_local_homographies,
     generate_patterns,
     gray_to_binary,
+    read_image,
     strict_checkerboard_correspondence_mask,
 )
 
@@ -127,6 +128,53 @@ def test_checkerboard_pattern_files_are_lossless_png(tmp_path) -> None:
     image = cv2.imread(str(tmp_path / "x" / "gray_00.png"), cv2.IMREAD_GRAYSCALE)
     assert image is not None
     assert set(np.unique(image)) <= {0, 255}
+
+
+def test_pattern_io_supports_non_ascii_windows_paths(tmp_path) -> None:
+    pattern_dir = tmp_path / "한글 패턴"
+    generate_patterns(pattern_dir, PatternProfile(width=96, height=64, period_px=8))
+    image = read_image(pattern_dir / "x" / "gray_00.png", cv2.IMREAD_GRAYSCALE)
+    assert image is not None
+    assert image.shape == (64, 96)
+
+
+def test_capture_failure_keeps_original_error_and_attempt_folder(tmp_path) -> None:
+    session = tmp_path / "session"
+    (session / "poses").mkdir(parents=True)
+    (session / "rejected").mkdir()
+    manifest_path = session / "session_manifest.json"
+    manifest_path.write_text(
+        json.dumps({"captured_poses": [], "rejected_poses": []}), encoding="utf-8"
+    )
+    capture = CalibrationCapture.__new__(CalibrationCapture)
+
+    def fail_camera_open():
+        raise RuntimeError("camera open failed")
+
+    capture._open_camera = fail_camera_open
+    try:
+        capture.capture_next_pose(session)
+    except RuntimeError as exc:
+        assert str(exc) == "camera open failed"
+    else:
+        raise AssertionError("capture failure was not propagated")
+
+    attempt = session / "poses" / "pose_001"
+    saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert attempt.is_dir()
+    assert saved["rejected_poses"][0]["relative_dir"] == "poses/pose_001"
+    assert saved["rejected_poses"][0]["error"] == "RuntimeError: camera open failed"
+
+
+def test_projector_render_scales_with_nearest_neighbor_and_keeps_aspect() -> None:
+    window = ProjectorWindow.__new__(ProjectorWindow)
+    window.monitor = Monitor(x=0, y=0, width=10, height=8, primary=False)
+    source = np.array([[0, 255], [255, 0]], dtype=np.uint8)
+    rendered = window.render(source)
+    assert rendered.shape == (8, 10)
+    assert set(np.unique(rendered)) == {0, 255}
+    assert np.all(rendered[:, :1] == 0)
+    assert np.all(rendered[:, -1:] == 0)
 
 
 def test_current_charuco_session_global_outlier_is_excluded_if_available() -> None:

@@ -33,18 +33,35 @@ class PatternProfile:
         return max(1, math.ceil(math.log2(cycles)))
 
 
-def _write_png(path: Path, image: np.ndarray) -> None:
+def read_image(path: Path, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    """Read an image without relying on OpenCV's Windows path handling."""
+    try:
+        encoded = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    except OSError:
+        return None
+    if encoded.size == 0:
+        return None
+    return cv2.imdecode(encoded, flags)
+
+
+def write_png(path: Path, image: np.ndarray) -> None:
+    """Write a PNG through pathlib so non-ASCII Windows paths are supported."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(path), image):
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
         raise RuntimeError(f"Could not write image: {path}")
+    try:
+        path.write_bytes(encoded.tobytes())
+    except OSError as exc:
+        raise RuntimeError(f"Could not write image: {path}") from exc
 
 
 def generate_patterns(root: Path, profile: PatternProfile) -> dict[str, Any]:
     """Generate and persist all patterns before the first hardware capture."""
     root.mkdir(parents=True, exist_ok=True)
     shape = (profile.height, profile.width)
-    _write_png(root / "reference_black.png", np.zeros(shape, dtype=np.uint8))
-    _write_png(root / "reference_white.png", np.full(shape, 255, dtype=np.uint8))
+    write_png(root / "reference_black.png", np.zeros(shape, dtype=np.uint8))
+    write_png(root / "reference_white.png", np.full(shape, 255, dtype=np.uint8))
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "projector_size_px": [profile.width, profile.height],
@@ -64,8 +81,8 @@ def generate_patterns(root: Path, profile: PatternProfile) -> dict[str, Any]:
             inverse = 255 - normal
             normal_name = f"gray_{bit_index:02d}.png"
             inverse_name = f"gray_{bit_index:02d}_inv.png"
-            _write_png(axis_dir / normal_name, normal)
-            _write_png(axis_dir / inverse_name, inverse)
+            write_png(axis_dir / normal_name, normal)
+            write_png(axis_dir / inverse_name, inverse)
             entries.extend(
                 (
                     {"kind": "gray", "bit": bit_index, "inverse": False, "file": normal_name},
@@ -76,7 +93,7 @@ def generate_patterns(root: Path, profile: PatternProfile) -> dict[str, Any]:
         for phase_deg in PHASES:
             image = np.rint(127.5 + 127.5 * np.cos(phase + np.deg2rad(phase_deg)))
             name = f"sine_{phase_deg:03d}.png"
-            _write_png(axis_dir / name, np.clip(image, 0, 255).astype(np.uint8))
+            write_png(axis_dir / name, np.clip(image, 0, 255).astype(np.uint8))
             entries.append({"kind": "sine", "phase_deg": phase_deg, "file": name})
         manifest["axes"][axis] = {"gray_bits": bit_count, "sequence": entries}
     (root / "pattern_manifest.json").write_text(
@@ -294,8 +311,8 @@ def decode_projector_axis(
     gray_value = np.zeros(corners.shape[0], dtype=np.int32)
     confidence = np.full(corners.shape[0], np.inf, dtype=np.float32)
     for bit_index in range(bit_count):
-        normal = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}.png"), cv2.IMREAD_GRAYSCALE)
-        inverse = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}_inv.png"), cv2.IMREAD_GRAYSCALE)
+        normal = read_image(capture_dir / f"gray_{bit_index:02d}.png", cv2.IMREAD_GRAYSCALE)
+        inverse = read_image(capture_dir / f"gray_{bit_index:02d}_inv.png", cv2.IMREAD_GRAYSCALE)
         if normal is None or inverse is None:
             raise ValueError(f"Missing Gray pair {bit_index} in {capture_dir}")
         delta = bilinear_sample(normal, corners) - bilinear_sample(inverse, corners)
@@ -304,7 +321,7 @@ def decode_projector_axis(
     cycle = gray_to_binary(gray_value, bit_count)
     sine = []
     for phase_deg in PHASES:
-        image = cv2.imread(str(capture_dir / f"sine_{phase_deg:03d}.png"), cv2.IMREAD_GRAYSCALE)
+        image = read_image(capture_dir / f"sine_{phase_deg:03d}.png", cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise ValueError(f"Missing sine {phase_deg} in {capture_dir}")
         sine.append(bilinear_sample(image, corners))
@@ -333,8 +350,8 @@ def decode_projector_axis_dense(
     gray_value: np.ndarray | None = None
     confidence: np.ndarray | None = None
     for bit_index in range(bit_count):
-        normal = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}.png"), cv2.IMREAD_GRAYSCALE)
-        inverse = cv2.imread(str(capture_dir / f"gray_{bit_index:02d}_inv.png"), cv2.IMREAD_GRAYSCALE)
+        normal = read_image(capture_dir / f"gray_{bit_index:02d}.png", cv2.IMREAD_GRAYSCALE)
+        inverse = read_image(capture_dir / f"gray_{bit_index:02d}_inv.png", cv2.IMREAD_GRAYSCALE)
         if normal is None or inverse is None:
             raise ValueError(f"Missing Gray pair {bit_index} in {capture_dir}")
         delta = normal.astype(np.float32) - inverse.astype(np.float32)
@@ -346,7 +363,7 @@ def decode_projector_axis_dense(
     assert gray_value is not None and confidence is not None
     sine_images: list[np.ndarray] = []
     for phase_deg in PHASES:
-        image = cv2.imread(str(capture_dir / f"sine_{phase_deg:03d}.png"), cv2.IMREAD_GRAYSCALE)
+        image = read_image(capture_dir / f"sine_{phase_deg:03d}.png", cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise ValueError(f"Missing sine {phase_deg} in {capture_dir}")
         sine_images.append(image.astype(np.float32))
@@ -643,7 +660,7 @@ def solve_geometry(session: Path) -> dict[str, Any]:
                 }
             )
             continue
-        camera_image = cv2.imread(str(pose_dir / "reference_white.png"), cv2.IMREAD_GRAYSCALE)
+        camera_image = read_image(pose_dir / "reference_white.png", cv2.IMREAD_GRAYSCALE)
         if camera_image is None:
             raise ValueError(f"Missing reference_white.png in {pose_dir}")
         camera_size = (camera_image.shape[1], camera_image.shape[0])
