@@ -75,6 +75,9 @@ enum ControlId {
     IDC_LED_OFF,
     IDC_ARUCO_CAPTURE_ZERO,
     IDC_ARUCO_CAPTURE_ROTATED,
+    IDC_ARUCO_REPEAT_ZERO,
+    IDC_ARUCO_REPEAT_ROTATED,
+    IDC_ARUCO_REPEAT_COUNT,
     IDC_ARUCO_CALCULATE,
     IDC_ARUCO_EXPOSURE,
     IDC_STAGE_PORT,
@@ -92,6 +95,8 @@ enum class JobMode {
     ContinuousCapture,
     ArucoCaptureZero,
     ArucoCaptureRotated,
+    ArucoRepeatZero,
+    ArucoRepeatRotated,
     ArucoCalculate,
 };
 
@@ -151,6 +156,9 @@ struct AppState {
     HWND ledOff{};
     HWND arucoCaptureZero{};
     HWND arucoCaptureRotated{};
+    HWND arucoRepeatZero{};
+    HWND arucoRepeatRotated{};
+    HWND arucoRepeatCount{};
     HWND arucoCalculate{};
     HWND arucoExposure{};
     HWND stagePort{};
@@ -725,6 +733,14 @@ std::wstring build_controller_command(JobMode mode) {
     } else if (mode == JobMode::ArucoCaptureRotated) {
         cmd << L" --aruco-prescan-capture --aruco-prescan-role rotated";
         append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
+    } else if (mode == JobMode::ArucoRepeatZero) {
+        cmd << L" --aruco-repeat-capture --aruco-prescan-role zero"
+            << L" --aruco-repeat-count " << quote(get_text(g_app.arucoRepeatCount));
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
+    } else if (mode == JobMode::ArucoRepeatRotated) {
+        cmd << L" --aruco-repeat-capture --aruco-prescan-role rotated"
+            << L" --aruco-repeat-count " << quote(get_text(g_app.arucoRepeatCount));
+        append_optional_arg(cmd, L"--aruco-exposure-us", g_app.arucoExposure);
     } else if (mode == JobMode::ArucoCalculate) {
         cmd << L" --aruco-precalibration"
             << L" --aruco-stage-command-value 250"
@@ -743,6 +759,9 @@ void set_job_buttons(bool running) {
     EnableWindow(g_app.scanType, !running);
     EnableWindow(g_app.arucoCaptureZero, !running);
     EnableWindow(g_app.arucoCaptureRotated, !running);
+    EnableWindow(g_app.arucoRepeatZero, !running);
+    EnableWindow(g_app.arucoRepeatRotated, !running);
+    EnableWindow(g_app.arucoRepeatCount, !running);
     EnableWindow(g_app.arucoCalculate, !running);
     EnableWindow(g_app.saveAllImages, !running);
     EnableWindow(g_app.projectRepeat, !running);
@@ -926,7 +945,9 @@ void start_job(JobMode mode, const std::wstring& label) {
     if (mode == JobMode::Scan) {
         g_app.mainScanArucoFailedAngle = -1;
     }
-    if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated || mode == JobMode::ArucoCalculate) {
+    if (mode == JobMode::ArucoCaptureZero || mode == JobMode::ArucoCaptureRotated ||
+        mode == JobMode::ArucoRepeatZero || mode == JobMode::ArucoRepeatRotated ||
+        mode == JobMode::ArucoCalculate) {
         apply_led_value(0);
         append_log(g_app.log, L"\r\n[aruco] Blue LED set to 0 for no-pattern prescan.\r\n");
     }
@@ -1132,6 +1153,15 @@ void build_ui(HWND hwnd) {
     g_app.arucoExposure = make_edit(hwnd, IDC_ARUCO_EXPOSURE, L"450000", 670, y, 100, 24);
 
     y += 34;
+    make_label(hwnd, L"Repeatability", margin, y + 4, 90, 22);
+    g_app.arucoRepeatZero = make_button(hwnd, IDC_ARUCO_REPEAT_ZERO, L"Repeat ArUco 0", 110, y, 145, 28);
+    g_app.arucoRepeatRotated = make_button(hwnd, IDC_ARUCO_REPEAT_ROTATED, L"Repeat ArUco 180", 270, y, 155, 28);
+    make_label(hwnd, L"Frames", 445, y + 4, 48, 22);
+    g_app.arucoRepeatCount = make_edit(hwnd, IDC_ARUCO_REPEAT_COUNT, L"10", 495, y, 55, 24);
+    SendMessageW(g_app.arucoRepeatCount, EM_SETLIMITTEXT, 3, 0);
+    make_label(hwnd, L"Saves PNGs + JSON report; does not replace prescan", 570, y + 4, 355, 22);
+
+    y += 34;
     make_label(hwnd, L"Rotation stage", margin, y + 4, 95, 22);
     make_label(hwnd, L"Port", 115, y + 4, 35, 22);
     g_app.stagePort = make_edit(hwnd, IDC_STAGE_PORT, L"COM3", 150, y, 70, 24);
@@ -1320,6 +1350,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 JobMode::ArucoCaptureRotated,
                 L"ArUco nominal-180 prescan");
             return 0;
+        case IDC_ARUCO_REPEAT_ZERO:
+            start_job(JobMode::ArucoRepeatZero, L"ArUco 0 repeatability");
+            return 0;
+        case IDC_ARUCO_REPEAT_ROTATED:
+            rotate_then_start_job(
+                JobMode::ArucoRepeatRotated,
+                L"ArUco nominal-180 repeatability");
+            return 0;
         case IDC_ARUCO_CALCULATE:
             start_job(JobMode::ArucoCalculate, L"ArUco alignment calculation");
             return 0;
@@ -1442,9 +1480,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             g_app.stageAtKnownZero = true;
             g_app.stageAtKnownRotated = false;
             set_status(L"Stage Returned to 0");
+            const bool completedRepeatability =
+                g_app.jobLabel == L"ArUco nominal-180 repeatability";
             MessageBoxW(
                 hwnd,
-                L"Rotated ArUco capture completed and the stage returned by X250. Calculate Alignment, then start the main scan.",
+                completedRepeatability
+                    ? L"Rotated ArUco repeatability capture completed and the stage returned by X250. Review the PNG files and repeatability_report.json in the output folder."
+                    : L"Rotated ArUco capture completed and the stage returned by X250. Calculate Alignment, then start the main scan.",
                 L"Stage Returned",
                 MB_ICONINFORMATION);
             break;
@@ -1463,7 +1505,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         ss << L"\r\n=== " << g_app.jobLabel << L" finished with exit code " << exitCode << L" ===\r\n";
         append_log(g_app.log, ss.str());
         set_status(exitCode == 0 ? L"Finished" : L"Failed");
-        if (g_app.jobLabel == L"ArUco 0 prescan" && exitCode == 0) {
+        if ((g_app.jobLabel == L"ArUco 0 prescan" ||
+             g_app.jobLabel == L"ArUco 0 repeatability") &&
+            exitCode == 0) {
             g_app.stageAtKnownZero = true;
             g_app.stageAtKnownRotated = false;
         }
@@ -1486,7 +1530,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 L"ArUco verification or alignment failed. The previous valid calibration was kept. Check marker visibility, focus, and exposure, then recapture the failed 0 or nominal-180 view.",
                 L"Recapture ArUco Prescan",
                 MB_ICONWARNING);
-        } else if (g_app.jobLabel == L"ArUco nominal-180 prescan") {
+        } else if (g_app.jobLabel == L"ArUco nominal-180 prescan" ||
+                   g_app.jobLabel == L"ArUco nominal-180 repeatability") {
             if (exitCode == 0) {
                 append_log(
                     g_app.log,
@@ -1615,7 +1660,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HWND hwnd = CreateWindowExW(
         0, kAppClass, L"PRO4500 XIMEA UV Scan Controller",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 850,
+        CW_USEDEFAULT, CW_USEDEFAULT, 1340, 900,
         nullptr, nullptr, instance, nullptr);
 
     if (!hwnd) return 1;

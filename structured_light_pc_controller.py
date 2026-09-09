@@ -1323,6 +1323,19 @@ def aruco_prescan_image_path(output_root: Path, role: str) -> Path:
     return aruco_prescan_dir(output_root) / name
 
 
+def aruco_repeatability_dir(
+    output_root: Path,
+    role: str,
+    created_at: datetime | None = None,
+) -> Path:
+    """Return a unique dataset folder without touching alignment prescan files."""
+    if role not in {"zero", "rotated"}:
+        raise ValueError("ArUco repeatability role must be zero or rotated")
+    stamp = (created_at or datetime.now()).strftime("%Y%m%d_%H%M%S_%f")
+    angle = "000" if role == "zero" else "180"
+    return output_root / "aruco_repeatability" / f"{stamp}_deg_{angle}"
+
+
 def aruco_stage_geometry(args: argparse.Namespace, marker_ids: list[int]) -> dict[str, Any]:
     """Return the physical stage coordinates associated with the configured marker order."""
     config = read_json_file(args.camera_config)
@@ -1364,6 +1377,67 @@ def aruco_marker_observations(markers: dict[int, Any]) -> dict[str, dict[str, li
             "center_px": polygon.mean(axis=0).tolist(),
         }
     return observations
+
+
+def summarize_aruco_repeatability(
+    frames: list[dict[str, Any]],
+    marker_ids: list[int],
+) -> dict[str, Any]:
+    """Measure stationary marker corner/center motion across successful frames."""
+    import numpy as np  # type: ignore
+
+    successful = [frame for frame in frames if frame.get("detection_passed")]
+    per_marker: dict[str, Any] = {}
+    all_corner_distances: list[Any] = []
+    all_center_distances: list[Any] = []
+    for marker_id in marker_ids:
+        samples = []
+        for frame in successful:
+            observation = frame.get("marker_observations", {}).get(str(marker_id))
+            if observation is not None:
+                samples.append(observation["corners_px"])
+        if not samples:
+            continue
+        corners = np.asarray(samples, dtype=np.float64).reshape(-1, 4, 2)
+        mean_corners = corners.mean(axis=0)
+        corner_distances = np.linalg.norm(corners - mean_corners, axis=2)
+        centers = corners.mean(axis=1)
+        mean_center = centers.mean(axis=0)
+        center_distances = np.linalg.norm(centers - mean_center, axis=1)
+        all_corner_distances.append(corner_distances.reshape(-1))
+        all_center_distances.append(center_distances.reshape(-1))
+        per_marker[str(marker_id)] = {
+            "sample_count": int(len(corners)),
+            "mean_corners_px": mean_corners.tolist(),
+            "mean_center_px": mean_center.tolist(),
+            "corner_jitter_rms_px": float(np.sqrt(np.mean(corner_distances**2))),
+            "corner_jitter_max_px": float(np.max(corner_distances)),
+            "center_jitter_rms_px": float(np.sqrt(np.mean(center_distances**2))),
+            "center_jitter_max_px": float(np.max(center_distances)),
+        }
+
+    def combined(values: list[Any], mode: str) -> float | None:
+        if not values:
+            return None
+        joined = np.concatenate(values)
+        if mode == "rms":
+            return float(np.sqrt(np.mean(joined**2)))
+        return float(np.max(joined))
+
+    success_count = len(successful)
+    total_count = len(frames)
+    return {
+        "frame_count": total_count,
+        "successful_detection_count": success_count,
+        "failed_detection_count": total_count - success_count,
+        "detection_success_rate": float(success_count / total_count) if total_count else 0.0,
+        "corner_jitter_rms_px": combined(all_corner_distances, "rms"),
+        "corner_jitter_max_px": combined(all_corner_distances, "max"),
+        "center_jitter_rms_px": combined(all_center_distances, "rms"),
+        "center_jitter_max_px": combined(all_center_distances, "max"),
+        "per_marker": per_marker,
+        "jitter_definition": "Euclidean pixel distance from each marker's across-frame mean geometry.",
+    }
 
 
 def copy_aruco_prescan_artifacts(output_root: Path, scan_dir: Path) -> dict[str, Any]:
@@ -1471,6 +1545,114 @@ def run_aruco_prescan_capture(args: argparse.Namespace) -> int:
         return 0
     except (CameraError, RuntimeError, ValueError) as exc:
         print(f"[aruco] ERROR: {exc}", flush=True)
+        return 1
+    finally:
+        if camera is not None:
+            camera.stop()
+            camera.close()
+
+
+def run_aruco_repeat_capture(args: argparse.Namespace) -> int:
+    """Save a stationary ArUco sequence and report detection and pixel jitter."""
+    cv2 = import_cv2()
+    gui_preview = GuiPreviewPublisher(cv2, args.gui_preview_file, args.gui_preview_max_width)
+    camera: CameraInterface | None = None
+    try:
+        if not 2 <= args.aruco_repeat_count <= 100:
+            raise ValueError("--aruco-repeat-count must be between 2 and 100")
+        if args.capture_interval_ms < 0:
+            raise ValueError("--capture-interval-ms must be zero or positive")
+        marker_ids = parse_aruco_ids(args.aruco_ids)
+        stage_geometry = aruco_stage_geometry(args, marker_ids)
+        output_dir = aruco_repeatability_dir(
+            args.output.resolve(), args.aruco_prescan_role
+        )
+        output_dir.mkdir(parents=True, exist_ok=False)
+        camera, settings = open_camera(
+            args,
+            exposure_us=args.aruco_exposure_us,
+            profile_overrides=aruco_prescan_camera_profile(args),
+        )
+        print(
+            f"[aruco-repeat] role={args.aruco_prescan_role} frames={args.aruco_repeat_count} "
+            f"exposure={settings.exposure_us}us output={output_dir}",
+            flush=True,
+        )
+        records: list[dict[str, Any]] = []
+        for index in range(1, args.aruco_repeat_count + 1):
+            frame = camera.capture_frame()
+            gui_preview.publish(frame.image)
+            image_path = output_dir / f"frame_{index:03d}.png"
+            size_bytes = save_camera_frame(cv2, frame, image_path)
+            detected = detect_aruco_markers(cv2, frame.image, args.aruco_dictionary)
+            selected_ids: list[int] = []
+            error = ""
+            try:
+                selected_ids = select_aruco_markers(detected, marker_ids)
+            except RuntimeError as exc:
+                error = str(exc)
+            record = {
+                "frame_number": index,
+                "filename": image_path.name,
+                "size_bytes": size_bytes,
+                "camera_timestamp_ms": frame.timestamp_ms,
+                "camera_frame_index": frame.frame_index,
+                "detection_passed": not error,
+                "detection_error": error or None,
+                "detected_ids": sorted(detected),
+                "selected_marker_ids": selected_ids,
+                "marker_observations": aruco_marker_observations(detected),
+            }
+            records.append(record)
+            print(
+                f"[aruco-repeat] frame={index}/{args.aruco_repeat_count} "
+                f"passed={record['detection_passed']} detected_ids={record['detected_ids']}",
+                flush=True,
+            )
+            if index < args.aruco_repeat_count and args.capture_interval_ms > 0:
+                time.sleep(args.capture_interval_ms / 1000.0)
+
+        repeatability = summarize_aruco_repeatability(records, marker_ids)
+        success_count = repeatability["successful_detection_count"]
+        status = (
+            "passed"
+            if success_count == args.aruco_repeat_count
+            else "partial"
+            if success_count
+            else "failed"
+        )
+        report = {
+            "status": status,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "role": args.aruco_prescan_role,
+            "nominal_angle_deg": 0 if args.aruco_prescan_role == "zero" else 180,
+            "output_directory": str(output_dir),
+            "dictionary": args.aruco_dictionary,
+            "requested_marker_ids": marker_ids,
+            "stage_geometry": stage_geometry,
+            "camera": {
+                "exposure_us": settings.exposure_us,
+                "gain_db": settings.gain_db,
+                "trigger_mode": settings.trigger_mode,
+                "fps": settings.fps,
+                "image_format": settings.image_format,
+            },
+            "capture_interval_ms": args.capture_interval_ms,
+            "repeatability": repeatability,
+            "frames": records,
+        }
+        report_path = output_dir / "repeatability_report.json"
+        report_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(
+            f"[aruco-repeat] completed status={status} success={success_count}/"
+            f"{args.aruco_repeat_count} report={report_path}",
+            flush=True,
+        )
+        return 0
+    except (CameraError, OSError, RuntimeError, ValueError) as exc:
+        print(f"[aruco-repeat] ERROR: {exc}", flush=True)
         return 1
     finally:
         if camera is not None:
@@ -3393,7 +3575,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--continuous-capture", nargs="?", const=0, type=int)
     parser.add_argument("--check-camera", action="store_true")
     parser.add_argument("--aruco-prescan-capture", action="store_true")
+    parser.add_argument(
+        "--aruco-repeat-capture",
+        action="store_true",
+        help="Save a stationary ArUco image sequence and a repeatability report.",
+    )
     parser.add_argument("--aruco-prescan-role", choices=("zero", "rotated"))
+    parser.add_argument(
+        "--aruco-repeat-count",
+        default=10,
+        type=int,
+        help="Number of stationary ArUco frames to save (2..100).",
+    )
     parser.add_argument(
         "--aruco-exposure-us",
         type=int,
@@ -3431,6 +3624,10 @@ def main() -> int:
     args = parse_args()
     if args.check_camera:
         return run_check_camera(args)
+    if args.aruco_repeat_capture:
+        if args.aruco_prescan_role is None:
+            raise SystemExit("--aruco-repeat-capture requires --aruco-prescan-role zero or rotated")
+        return run_aruco_repeat_capture(args)
     if args.aruco_prescan_capture:
         if args.aruco_prescan_role is None:
             raise SystemExit("--aruco-prescan-capture requires --aruco-prescan-role zero or rotated")

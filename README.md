@@ -452,6 +452,35 @@ calibration untouched and reports that the current view must be recaptured. A
 successful calculation writes
 `captures/aruco_precalibration/stage_precalibration.json`.
 
+### ArUco 반복 촬영 데이터 수집
+
+보드가 오기 전에 스테이지 마커의 검출 안정성과 카메라 반복성을 확인하려면
+GUI의 **Repeat ArUco 0** 및 **Repeat ArUco 180**을 사용합니다. `Frames`에
+촬영 매수(2~100, 기본 10)를 입력합니다. 180 버튼은 X250 회전 후 연속 촬영하고,
+완료되면 X250을 한 번 더 실행해 0 위치로 자동 복귀합니다. 두 기능 모두 Blue
+LED를 0으로 끄고 ArUco 전용 노출값을 사용합니다.
+
+반복 촬영 결과는 정합 계산에 쓰는 기존 prescan 파일을 덮어쓰지 않고 다음과
+같은 별도 폴더에 저장됩니다.
+
+```text
+captures/aruco_repeatability/<timestamp>_deg_000/
+captures/aruco_repeatability/<timestamp>_deg_180/
+```
+
+각 폴더에는 `frame_001.png` 형식의 모든 원본 프레임과
+`repeatability_report.json`이 생성됩니다. JSON에는 프레임별 검출 성공 여부,
+검출 ID, 네 코너와 중심 좌표, 전체 검출 성공률, 마커별 코너/중심 RMS 및 최대
+흔들림(px)이 들어갑니다. 검출에 실패한 프레임도 원인 분석을 위해 보존됩니다.
+
+CLI에서는 다음과 같이 같은 기능을 실행할 수 있습니다.
+
+```powershell
+.\.venv-pc\Scripts\python.exe .\structured_light_pc_controller.py `
+  --aruco-repeat-capture --aruco-prescan-role zero --aruco-repeat-count 10 `
+  --output .\captures --camera-config .\camera_config.json
+```
+
 `Start Scan` no longer requires a previously saved global precalibration JSON.
 Each scan creates its own `<scan_id>/stage_precalibration.json` from the ArUco
 frames captured at the exact positions used for that scan; pass that JSON to the

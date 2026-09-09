@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import cv2
 import numpy as np
 import pytest
@@ -10,6 +12,7 @@ from structured_light_pc_controller import (
     HdrConfig,
     QualityGateConfig,
     aruco_stage_geometry,
+    aruco_repeatability_dir,
     aruco_marker_observations,
     assess_fpp_quality,
     compare_aruco_pose_to_prescan,
@@ -18,6 +21,7 @@ from structured_light_pc_controller import (
     load_capture_config,
     select_structured_light_sequence_bracket,
     summarize_quality_issues,
+    summarize_aruco_repeatability,
     validate_projected_frame,
 )
 
@@ -242,6 +246,44 @@ def test_aruco_marker_observations_save_corners_and_centers() -> None:
             "center_px": [3.0, 4.0],
         }
     }
+
+
+def test_aruco_repeatability_directory_is_separate_and_angle_labeled(tmp_path) -> None:
+    created_at = datetime(2026, 9, 9, 13, 14, 15, 123456)
+
+    zero = aruco_repeatability_dir(tmp_path, "zero", created_at)
+    rotated = aruco_repeatability_dir(tmp_path, "rotated", created_at)
+
+    assert zero == tmp_path / "aruco_repeatability" / "20260909_131415_123456_deg_000"
+    assert rotated == tmp_path / "aruco_repeatability" / "20260909_131415_123456_deg_180"
+    assert "aruco_precalibration" not in str(zero)
+
+
+def test_aruco_repeatability_reports_detection_rate_and_pixel_jitter() -> None:
+    base = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=np.float64)
+    frames = [
+        {
+            "detection_passed": True,
+            "marker_observations": aruco_marker_observations({0: base}),
+        },
+        {
+            "detection_passed": True,
+            "marker_observations": aruco_marker_observations(
+                {0: base + np.array([1.0, 0.0])}
+            ),
+        },
+        {"detection_passed": False, "marker_observations": {}},
+    ]
+
+    summary = summarize_aruco_repeatability(frames, [0, 1])
+
+    assert summary["successful_detection_count"] == 2
+    assert summary["failed_detection_count"] == 1
+    assert summary["detection_success_rate"] == pytest.approx(2 / 3)
+    assert summary["corner_jitter_rms_px"] == pytest.approx(0.5)
+    assert summary["center_jitter_rms_px"] == pytest.approx(0.5)
+    assert summary["per_marker"]["0"]["sample_count"] == 2
+    assert "1" not in summary["per_marker"]
 
 
 def test_main_scan_aruco_pose_accepts_matching_prescan_position() -> None:
