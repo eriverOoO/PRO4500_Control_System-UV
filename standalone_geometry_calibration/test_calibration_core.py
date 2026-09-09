@@ -38,7 +38,7 @@ def test_stage_aruco_size_is_separate_from_charuco_board_marker() -> None:
     config_path = Path(__file__).with_name("calibration_config.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
 
-    assert config["checkerboard"]["marker_size_mm"] == 9.0
+    assert config["checkerboard"]["marker_size_mm"] == 10.0
     assert config["stage_aruco"]["marker_size_mm"] == 12.0
 
 

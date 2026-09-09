@@ -24,9 +24,9 @@ structured-light black reference.
 - `checkerboard.marker_size_mm`: ArUco 마커 검은 외곽의 실제 크기
 - UV 대비 문제를 줄이기 위해 프로젝터 OFF 영상과 CLAHE 영상을 우선 검출하고, 구조광 좌표는 코너 주변의 유효한 백색 영역에서 국소 호모그래피로 추정합니다.
 - `projector.monitor_index`, `width_px`, `height_px`: Windows 프로젝터 화면
-- `stage_aruco.marker_size_mm`, `marker_ids`: 스테이지에 부착한 별도 마커 정보. 크기는 흰색 사각형 전체가 아니라 ArUco의 검은 외곽 사각형 한 변을 캘리퍼스로 잰 값입니다. 현재 스테이지 마커 실측값은 `12 mm`이므로 기본값은 `12.0`입니다. ChArUco 보정판 내부 마커의 `9 mm`와 혼동하면 안 됩니다.
+- `stage_aruco.marker_size_mm`, `marker_ids`: 스테이지에 부착한 별도 마커 정보. 크기는 흰색 사각형 전체가 아니라 ArUco의 검은 외곽 사각형 한 변을 캘리퍼스로 잰 값입니다. 현재 스테이지 마커 실측값은 `12 mm`이므로 기본값은 `12.0`입니다. ChArUco 보정판 내부 마커의 `10 mm`와 혼동하면 안 됩니다.
 
-제공된 A4 보정판은 12 mm 정사각형 22×15칸, 내부 코너 21×14 규격이며
+현재 ChArUco 보정판은 13 mm 정사각형 22×15칸, 내부 코너 21×14 규격이며
 기본 설정이 이 PDF와 일치합니다.
 
 체커보드 외곽은 직사각형, 원형 어느 쪽이어도 무관합니다. 코너 격자와 한 칸의
