@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-09-10T04:45:42.738071+00:00",
+  "source_0": "scan_20260909_164257/angle_000",
+  "source_180": "scan_20260909_164257/angle_180",
+  "flatness_0": {
+    "valid_ratio": 0.9741183200170813,
+    "phase_span": 290.45541602373123,
+    "p95_plane_residual": 0.8174789713232627,
+    "outlier_ratio": 0.006735355202716873,
+    "cycle_slip_masked_ratio": 0.0,
+    "valid": true,
+    "reason": "flat stage accepted"
+  },
+  "flatness_180": {
+    "valid_ratio": 0.9748837087067357,
+    "phase_span": 290.5522657990456,
+    "p95_plane_residual": 0.8512757817100844,
+    "outlier_ratio": 0.017554784568395456,
+    "cycle_slip_masked_ratio": 0.0,
+    "valid": true,
+    "reason": "flat stage accepted"
+  },
+  "portable_bundle_note": "Copy this flat_stage_reference folder to the decoder ReferenceStore path, or register the primary empty scan in GUI step 2."
+}

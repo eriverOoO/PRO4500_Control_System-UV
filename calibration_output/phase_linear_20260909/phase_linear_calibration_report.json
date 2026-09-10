@@ -1,0 +1,505 @@
+{
+  "calibration_id": "phase_linear_20260909_2p95_5p03_7p96mm",
+  "created_at": "2026-09-10T04:45:42.738071+00:00",
+  "status": "provisional_pending_independent_2mm_or_6mm_validation",
+  "method": "direction-specific zero-anchored scalar phase-linear calibration",
+  "units": {
+    "height": "mm",
+    "phase": "radian",
+    "phase_per_mm": "radian/mm"
+  },
+  "decoder_settings": {
+    "phase_axis": "y",
+    "phase_convention": "swapped",
+    "apply_half_period_correction": true,
+    "median_filter": 3,
+    "min_signal": 12.0,
+    "modulation_threshold": 0.04,
+    "gray_pair_min_contrast": 0.04
+  },
+  "primary_reference": {
+    "scan": "scan_20260909_164257",
+    "physical_to_labeled": {
+      "0": 0,
+      "180": 180
+    },
+    "flatness": {
+      "0": {
+        "valid_ratio": 0.9741183200170813,
+        "phase_span": 290.45541602373123,
+        "p95_plane_residual": 0.8174789713232627,
+        "outlier_ratio": 0.006735355202716873,
+        "cycle_slip_masked_ratio": 0.0,
+        "valid": true,
+        "reason": "flat stage accepted"
+      },
+      "180": {
+        "valid_ratio": 0.9748837087067357,
+        "phase_span": 290.5522657990456,
+        "p95_plane_residual": 0.8512757817100844,
+        "outlier_ratio": 0.017554784568395456,
+        "cycle_slip_masked_ratio": 0.0,
+        "valid": true,
+        "reason": "flat stage accepted"
+      }
+    }
+  },
+  "secondary_reference_validation": {
+    "scan": "scan_20260909_164529",
+    "physical_to_labeled": {
+      "180": 0,
+      "0": 180
+    },
+    "zero_repeatability": {
+      "0": {
+        "overlap_pixel_count": 719554,
+        "median_height_mm": 0.14103136956691742,
+        "centered_p95_abs_mm": 0.038894787430763245
+      },
+      "180": {
+        "overlap_pixel_count": 723930,
+        "median_height_mm": 0.07582009583711624,
+        "centered_p95_abs_mm": 0.03804861754179001
+      }
+    }
+  },
+  "orientation_resolution": [
+    {
+      "scan": "scan_20260909_165117_3mm",
+      "height_mm": 2.95,
+      "physical_to_labeled": {
+        "0": 0,
+        "180": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_165310_3mm",
+      "height_mm": 2.95,
+      "physical_to_labeled": {
+        "180": 0,
+        "0": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_165526-3mm",
+      "height_mm": 2.95,
+      "physical_to_labeled": {
+        "0": 0,
+        "180": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_164918_5mm",
+      "height_mm": 5.03,
+      "physical_to_labeled": {
+        "180": 0,
+        "0": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_165744_5mm",
+      "height_mm": 5.03,
+      "physical_to_labeled": {
+        "180": 0,
+        "0": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_165944_5mm",
+      "height_mm": 5.03,
+      "physical_to_labeled": {
+        "0": 0,
+        "180": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_164716 _8mm",
+      "height_mm": 7.96,
+      "physical_to_labeled": {
+        "0": 0,
+        "180": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_170200_8mm",
+      "height_mm": 7.96,
+      "physical_to_labeled": {
+        "180": 0,
+        "0": 180
+      }
+    },
+    {
+      "scan": "scan_20260909_170340_8mm",
+      "height_mm": 7.96,
+      "physical_to_labeled": {
+        "0": 0,
+        "180": 180
+      }
+    }
+  ],
+  "samples": {
+    "0": [
+      {
+        "otsu_threshold": 101.0,
+        "selected_pixel_count": 94699,
+        "robust_pixel_count": 92440,
+        "delta_phase_median": -17.104957580566406,
+        "delta_phase_mad": 0.4297291305541992,
+        "delta_phase_p10_p90": [
+          -17.78110580444336,
+          -16.701429748535155
+        ],
+        "scan": "scan_20260909_165117_3mm",
+        "height_mm": 2.95,
+        "physical_view": 0,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 103.0,
+        "selected_pixel_count": 84080,
+        "robust_pixel_count": 82680,
+        "delta_phase_median": -16.874836921691895,
+        "delta_phase_mad": 0.4383639249801636,
+        "delta_phase_p10_p90": [
+          -17.50084686279297,
+          -16.459476470947266
+        ],
+        "scan": "scan_20260909_165310_3mm",
+        "height_mm": 2.95,
+        "physical_view": 0,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 103.0,
+        "selected_pixel_count": 85770,
+        "robust_pixel_count": 82503,
+        "delta_phase_median": -16.789337158203125,
+        "delta_phase_mad": 0.5380917709350586,
+        "delta_phase_p10_p90": [
+          -17.452430725097656,
+          -16.291866302490234
+        ],
+        "scan": "scan_20260909_165526-3mm",
+        "height_mm": 2.95,
+        "physical_view": 0,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 104.0,
+        "selected_pixel_count": 83834,
+        "robust_pixel_count": 81503,
+        "delta_phase_median": -30.151229858398438,
+        "delta_phase_mad": 0.7904364624023437,
+        "delta_phase_p10_p90": [
+          -30.796571350097658,
+          -28.96843147277832
+        ],
+        "scan": "scan_20260909_164918_5mm",
+        "height_mm": 5.03,
+        "physical_view": 0,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 104.0,
+        "selected_pixel_count": 61729,
+        "robust_pixel_count": 60843,
+        "delta_phase_median": -29.38969612121582,
+        "delta_phase_mad": 0.9620040447235106,
+        "delta_phase_p10_p90": [
+          -30.681578826904296,
+          -28.49141616821289
+        ],
+        "scan": "scan_20260909_165744_5mm",
+        "height_mm": 5.03,
+        "physical_view": 0,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 102.0,
+        "selected_pixel_count": 78974,
+        "robust_pixel_count": 77090,
+        "delta_phase_median": -29.701995849609375,
+        "delta_phase_mad": 0.3469131523132324,
+        "delta_phase_p10_p90": [
+          -30.106094741821288,
+          -29.177336120605467
+        ],
+        "scan": "scan_20260909_165944_5mm",
+        "height_mm": 5.03,
+        "physical_view": 0,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 107.0,
+        "selected_pixel_count": 63184,
+        "robust_pixel_count": 61507,
+        "delta_phase_median": -47.4566650390625,
+        "delta_phase_mad": 0.7810537055969238,
+        "delta_phase_p10_p90": [
+          -48.25750885009766,
+          -46.33572998046875
+        ],
+        "scan": "scan_20260909_164716 _8mm",
+        "height_mm": 7.96,
+        "physical_view": 0,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 99.0,
+        "selected_pixel_count": 40620,
+        "robust_pixel_count": 39769,
+        "delta_phase_median": -46.54214859008789,
+        "delta_phase_mad": 0.5985226066589355,
+        "delta_phase_p10_p90": [
+          -47.27906951904297,
+          -45.987467193603514
+        ],
+        "scan": "scan_20260909_170200_8mm",
+        "height_mm": 7.96,
+        "physical_view": 0,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 102.0,
+        "selected_pixel_count": 54185,
+        "robust_pixel_count": 53544,
+        "delta_phase_median": -46.64588928222656,
+        "delta_phase_mad": 0.537526203918457,
+        "delta_phase_p10_p90": [
+          -47.32809295654297,
+          -46.17276878356934
+        ],
+        "scan": "scan_20260909_170340_8mm",
+        "height_mm": 7.96,
+        "physical_view": 0,
+        "labeled_view": 0
+      }
+    ],
+    "180": [
+      {
+        "otsu_threshold": 104.0,
+        "selected_pixel_count": 90362,
+        "robust_pixel_count": 85634,
+        "delta_phase_median": -16.66895294189453,
+        "delta_phase_mad": 0.6401030937194824,
+        "delta_phase_p10_p90": [
+          -17.489564514160158,
+          -16.009291648864746
+        ],
+        "scan": "scan_20260909_165117_3mm",
+        "height_mm": 2.95,
+        "physical_view": 180,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 101.0,
+        "selected_pixel_count": 94603,
+        "robust_pixel_count": 92672,
+        "delta_phase_median": -16.674453735351562,
+        "delta_phase_mad": 0.3401942161560058,
+        "delta_phase_p10_p90": [
+          -17.207457733154296,
+          -16.302429962158204
+        ],
+        "scan": "scan_20260909_165310_3mm",
+        "height_mm": 2.95,
+        "physical_view": 180,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 102.0,
+        "selected_pixel_count": 94465,
+        "robust_pixel_count": 91122,
+        "delta_phase_median": -16.637012481689453,
+        "delta_phase_mad": 0.41591515617370606,
+        "delta_phase_p10_p90": [
+          -17.252674102783203,
+          -16.181167602539062
+        ],
+        "scan": "scan_20260909_165526-3mm",
+        "height_mm": 2.95,
+        "physical_view": 180,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 105.0,
+        "selected_pixel_count": 93392,
+        "robust_pixel_count": 89957,
+        "delta_phase_median": -29.77187728881836,
+        "delta_phase_mad": 0.614952328491211,
+        "delta_phase_p10_p90": [
+          -30.43010711669922,
+          -29.153318786621092
+        ],
+        "scan": "scan_20260909_164918_5mm",
+        "height_mm": 5.03,
+        "physical_view": 180,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 101.0,
+        "selected_pixel_count": 73217,
+        "robust_pixel_count": 71190,
+        "delta_phase_median": -29.302207946777344,
+        "delta_phase_mad": 0.8839416572570801,
+        "delta_phase_p10_p90": [
+          -30.338180541992188,
+          -28.513827896118165
+        ],
+        "scan": "scan_20260909_165744_5mm",
+        "height_mm": 5.03,
+        "physical_view": 180,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 102.0,
+        "selected_pixel_count": 67001,
+        "robust_pixel_count": 65252,
+        "delta_phase_median": -29.071731567382812,
+        "delta_phase_mad": 0.5488149215698241,
+        "delta_phase_p10_p90": [
+          -29.76412124633789,
+          -28.390484619140626
+        ],
+        "scan": "scan_20260909_165944_5mm",
+        "height_mm": 5.03,
+        "physical_view": 180,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 107.0,
+        "selected_pixel_count": 64651,
+        "robust_pixel_count": 62233,
+        "delta_phase_median": -47.04539489746094,
+        "delta_phase_mad": 0.8131722564697265,
+        "delta_phase_p10_p90": [
+          -47.965701293945315,
+          -46.05788650512695
+        ],
+        "scan": "scan_20260909_164716 _8mm",
+        "height_mm": 7.96,
+        "physical_view": 180,
+        "labeled_view": 180
+      },
+      {
+        "otsu_threshold": 97.0,
+        "selected_pixel_count": 24838,
+        "robust_pixel_count": 23277,
+        "delta_phase_median": -46.561553955078125,
+        "delta_phase_mad": 0.690998469543457,
+        "delta_phase_p10_p90": [
+          -47.18605194091797,
+          -45.73862533569336
+        ],
+        "scan": "scan_20260909_170200_8mm",
+        "height_mm": 7.96,
+        "physical_view": 180,
+        "labeled_view": 0
+      },
+      {
+        "otsu_threshold": 99.0,
+        "selected_pixel_count": 44813,
+        "robust_pixel_count": 43464,
+        "delta_phase_median": -46.3331413269043,
+        "delta_phase_mad": 0.6495424072265624,
+        "delta_phase_p10_p90": [
+          -47.16935653686524,
+          -45.6841323852539
+        ],
+        "scan": "scan_20260909_170340_8mm",
+        "height_mm": 7.96,
+        "physical_view": 180,
+        "labeled_view": 180
+      }
+    ]
+  },
+  "fits": {
+    "0": {
+      "selected_model": "zero_anchored_least_squares",
+      "height_sign": -1.0,
+      "phase_per_mm": 5.882307709388783,
+      "free_intercept_fit": {
+        "slope_phase_per_mm": -5.971097390860124,
+        "intercept_phase": 0.5423467588743375,
+        "r2": 0.9991564859601084
+      },
+      "pairwise_slope_median_abs": 5.959391641521645,
+      "pairwise_slope_p10_p90_abs": [
+        5.768736230635399,
+        6.2337039067195015
+      ],
+      "known_height_abs_error_p95_mm": 0.10293334981911349,
+      "known_height_max_abs_error_mm": 0.10769509240678736,
+      "known_height_groups": [
+        {
+          "height_mm": 2.95,
+          "predicted_mean_mm": 2.876939582709948,
+          "bias_mm": -0.0730604172900522,
+          "repeat_sd_mm": 0.02775085653407434,
+          "repeat_range_mm": 0.053655884383524644
+        },
+        {
+          "height_mm": 5.03,
+          "predicted_mean_mm": 5.057137790031086,
+          "bias_mm": 0.02713779003108563,
+          "repeat_sd_mm": 0.06507875445709826,
+          "repeat_range_mm": 0.129461730804584
+        },
+        {
+          "height_mm": 7.96,
+          "predicted_mean_mm": 7.969927782305187,
+          "bias_mm": 0.009927782305187094,
+          "repeat_sd_mm": 0.08512692163558226,
+          "repeat_range_mm": 0.1554689917895571
+        }
+      ]
+    },
+    "180": {
+      "selected_model": "zero_anchored_least_squares",
+      "height_sign": -1.0,
+      "phase_per_mm": 5.836247840141772,
+      "free_intercept_fit": {
+        "slope_phase_per_mm": -5.979251837653929,
+        "intercept_phase": 0.8734996372503643,
+        "r2": 0.9995095307613682
+      },
+      "pairwise_slope_median_abs": 5.9692226579164895,
+      "pairwise_slope_p10_p90_abs": [
+        5.859379166222269,
+        6.199348949954152
+      ],
+      "known_height_abs_error_p95_mm": 0.1002844170916409,
+      "known_height_max_abs_error_mm": 0.10089737551620531,
+      "known_height_groups": [
+        {
+          "height_mm": 2.95,
+          "predicted_mean_mm": 2.8545977100315323,
+          "bias_mm": -0.09540228996846789,
+          "repeat_sd_mm": 0.0034639959616928366,
+          "repeat_range_mm": 0.0064152953554486025
+        },
+        {
+          "height_mm": 5.03,
+          "predicted_mean_mm": 5.034388487109285,
+          "bias_mm": 0.0043884871092849664,
+          "repeat_sd_mm": 0.06113818039282983,
+          "repeat_range_mm": 0.11996504271459063
+        },
+        {
+          "height_mm": 7.96,
+          "predicted_mean_mm": 7.992583249402923,
+          "bias_mm": 0.03258324940292301,
+          "repeat_sd_mm": 0.0623140356466748,
+          "repeat_range_mm": 0.12203963746325996
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Accuracy statistics are in-sample for 2.95, 5.03, and 7.96 mm blocks.",
+    "Independent 2 mm or 6 mm validation is required before production use.",
+    "The scalar sensitivity is supported near the central block region; full-stage spatial uniformity has not been validated.",
+    "The scan must be assigned by physical ArUco orientation, not merely by angle_000/angle_180 folder labels.",
+    "Camera, projector, focus, pattern scale, exposure, and mechanical geometry must remain unchanged."
+  ]
+}
