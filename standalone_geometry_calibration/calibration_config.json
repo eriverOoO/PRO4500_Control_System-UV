@@ -43,7 +43,7 @@
   },
   "checkerboard": {
     "target_type": "charuco",
-    "squares": [22, 15],
+    "squares": [16, 16],
     "square_size_mm": 12.0,
     "marker_size_mm": 9.0,
     "dictionary": "DICT_5X5_250",
