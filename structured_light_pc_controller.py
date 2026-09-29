@@ -125,6 +125,9 @@ class HdrConfig:
     black_offset: float
     selection_headroom_threshold: int
     brackets: tuple[ExposureBracket, ...]
+    # Significant bits of 16-bit camera samples (12 for right-aligned mono12).
+    # None means the full dtype range, as for mono8 and mono16.
+    sample_bit_depth: int | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +353,18 @@ def dtype_max(image: Any) -> int:
     return 1
 
 
+IMAGE_FORMAT_SAMPLE_BIT_DEPTH = {"mono12": 12}
+
+
+def sample_max(image: Any, sample_bit_depth: int | None = None) -> int:
+    """Full-scale value of a camera frame, honoring right-aligned 12-bit data."""
+    import numpy as np  # type: ignore
+
+    if sample_bit_depth is not None and image.dtype == np.uint16:
+        return (1 << sample_bit_depth) - 1
+    return dtype_max(image)
+
+
 def scale_threshold(value: int, sensor_max: int) -> int:
     if sensor_max <= 255 or value > 255:
         return int(value)
@@ -427,6 +442,12 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
     output_bit_depth = int(single_section.get("output_bit_depth", 8))
     if output_bit_depth not in {8, 16}:
         raise SystemExit("capture.single_exposure.output_bit_depth must be 8 or 16")
+    camera_section = config.get("camera", {})
+    ximea_section = camera_section.get("ximea", {}) if isinstance(camera_section, dict) else {}
+    image_format = getattr(args, "image_format", None) or (
+        ximea_section.get("image_format") if isinstance(ximea_section, dict) else None
+    )
+    sample_bit_depth = IMAGE_FORMAT_SAMPLE_BIT_DEPTH.get(str(image_format or "").lower())
 
     scan_type = args.scan_type or str(metadata_section.get("scan_type", "object"))
     if scan_type not in {"reference", "object"}:
@@ -457,6 +478,7 @@ def load_capture_config(args: argparse.Namespace) -> CaptureConfig:
             black_offset=float(single_section.get("black_offset", 0.0)),
             selection_headroom_threshold=235,
             brackets=(ExposureBracket("single", exposure_us, gain_db),),
+            sample_bit_depth=sample_bit_depth,
         ),
         rig=RigMetadata(
             scan_type=scan_type,
@@ -957,13 +979,16 @@ def synthesize_frame(cv2, pattern: Any, bracket: ExposureBracket, hdr: HdrConfig
     return simulated.astype(gray.dtype)
 
 
-def to_decoder_u8(image: Any):
+def to_decoder_u8(image: Any, sample_bit_depth: int | None = None):
     """Use the same 0..255 domain the decoder uses for mono PNG inputs."""
     import numpy as np  # type: ignore
 
     array = np.asarray(image)
     if array.dtype == np.uint16:
-        return np.rint(array.astype(np.float32) * (255.0 / 65535.0)).astype(np.uint8)
+        full_scale = float(sample_max(array, sample_bit_depth))
+        return np.rint(
+            np.clip(array.astype(np.float32) * (255.0 / full_scale), 0, 255)
+        ).astype(np.uint8)
     if array.dtype != np.uint8:
         maximum = float(np.max(array)) if array.size else 1.0
         return np.clip(array.astype(np.float32) * (255.0 / max(1.0, maximum)), 0, 255).astype(np.uint8)
@@ -991,7 +1016,7 @@ def merge_hdr_frames(
         raise RuntimeError(f"HDR bracket frame shapes do not match; mismatched indices: {mismatched}")
 
     stack = np.stack(gray_frames, axis=0)
-    sensor_max = dtype_max(gray_frames[0])
+    sensor_max = sample_max(gray_frames[0], hdr.sample_bit_depth)
     saturated_threshold = min(sensor_max, scale_threshold(hdr.saturated_threshold, sensor_max))
     selection_threshold = min(
         saturated_threshold,
@@ -1027,8 +1052,14 @@ def merge_hdr_frames(
         )
         algorithm = "structured_light_sequence_bracket"
 
-    output_max = 65535 if hdr.output_bit_depth == 16 else 255
-    output_dtype = np.uint16 if hdr.output_bit_depth == 16 else np.uint8
+    if hdr.sample_bit_depth is not None:
+        # Keep right-aligned camera samples as they are (e.g. 0..4095); the
+        # decoder is told the bit depth instead of receiving rescaled values.
+        output_max = sensor_max
+        output_dtype = np.uint16
+    else:
+        output_max = 65535 if hdr.output_bit_depth == 16 else 255
+        output_dtype = np.uint16 if hdr.output_bit_depth == 16 else np.uint8
     if selected_bracket_index is None:
         selected = np.take_along_axis(corrected_stack, chosen[None, :, :], axis=0)[0]
         selected_scales = scales[chosen]
@@ -1046,19 +1077,18 @@ def merge_hdr_frames(
     ).astype(output_dtype)
 
     selected_bracket_map = chosen.astype(np.uint8)
-    merged_u8 = to_decoder_u8(merged)
+    merged_u8 = to_decoder_u8(merged, hdr.sample_bit_depth)
     if selected_bracket_index is None:
         saturated_mask = np.all(stack >= saturated_threshold, axis=0).astype(np.uint8) * 255
         dark_mask = np.all(corrected_stack <= dark_threshold, axis=0).astype(np.uint8) * 255
     else:
         saturated_mask = (stack[selected_bracket_index] >= saturated_threshold).astype(np.uint8) * 255
         dark_mask = (corrected_stack[selected_bracket_index] <= dark_threshold).astype(np.uint8) * 255
-    selected_bracket_map = chosen.astype(np.uint8)
-    merged_u8 = to_decoder_u8(merged)
 
     report = {
         "algorithm": algorithm,
-        "output_bit_depth": hdr.output_bit_depth,
+        "output_bit_depth": int(np.iinfo(output_dtype).bits),
+        "sample_bit_depth": hdr.sample_bit_depth,
         "saturated_threshold": int(saturated_threshold),
         "selection_headroom_threshold": int(selection_threshold),
         "dark_threshold": int(dark_threshold),
@@ -2142,7 +2172,7 @@ def decoder_channel_stats(cv2, image: Any, hdr: HdrConfig) -> dict[str, float | 
     """Summarize the exact mono/blue-equivalent values consumed by the decoder."""
     import numpy as np  # type: ignore
 
-    decoder_u8 = to_decoder_u8(to_grayscale(cv2, image))
+    decoder_u8 = to_decoder_u8(to_grayscale(cv2, image), hdr.sample_bit_depth)
     return {
         "channel": "blue_equivalent_mono" if len(image.shape) == 2 else "blue",
         "dtype": str(image.dtype),
@@ -2177,7 +2207,8 @@ def validate_projected_frame(
     """
     import numpy as np  # type: ignore
 
-    candidate = to_decoder_u8(to_grayscale(cv2, frame)).astype(np.float32)
+    bits = hdr.sample_bit_depth
+    candidate = to_decoder_u8(to_grayscale(cv2, frame), bits).astype(np.float32)
     if not guard.enabled:
         return {"passed": True, "reason": "disabled"}
 
@@ -2195,7 +2226,7 @@ def validate_projected_frame(
     if pattern_id == 1:
         if white_reference is None:
             return {"passed": True, "reason": "black_reference_ready_without_white"}
-        white = to_decoder_u8(to_grayscale(cv2, white_reference)).astype(np.float32)
+        white = to_decoder_u8(to_grayscale(cv2, white_reference), bits).astype(np.float32)
         active = white > dark_limit
         if not np.any(active):
             return {"passed": False, "reason": "white_reference_has_no_illuminated_area"}
@@ -2222,8 +2253,8 @@ def validate_projected_frame(
     if white_reference is None or black_reference is None:
         return {"passed": True, "reason": "reference_patterns_not_available"}
 
-    white = to_decoder_u8(to_grayscale(cv2, white_reference)).astype(np.float32)
-    black = to_decoder_u8(to_grayscale(cv2, black_reference)).astype(np.float32)
+    white = to_decoder_u8(to_grayscale(cv2, white_reference), bits).astype(np.float32)
+    black = to_decoder_u8(to_grayscale(cv2, black_reference), bits).astype(np.float32)
     active = np.abs(white - black) >= guard.min_signal_delta_u8
     if not np.any(active):
         return {"passed": False, "reason": "reference_patterns_have_no_contrast"}
@@ -2242,13 +2273,14 @@ def validate_projected_frame(
 def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: QualityGateConfig) -> dict[str, Any]:
     import numpy as np  # type: ignore
 
+    bits = hdr.sample_bit_depth
     stats = {str(pattern_id): decoder_channel_stats(cv2, image, hdr) for pattern_id, image in images.items()}
     result: dict[str, Any] = {"channel": "blue_equivalent", "patterns": stats, "checks": []}
     failures: list[str] = []
     active: Any | None = None
     if 0 in images and 1 in images:
-        white = to_decoder_u8(to_grayscale(cv2, images[0])).astype(np.float32)
-        black = to_decoder_u8(to_grayscale(cv2, images[1])).astype(np.float32)
+        white = to_decoder_u8(to_grayscale(cv2, images[0]), bits).astype(np.float32)
+        black = to_decoder_u8(to_grayscale(cv2, images[1]), bits).astype(np.float32)
         signal = np.maximum(white - black, 0.0)
         # The camera deliberately includes a large black border around the
         # projected stage.  A whole-frame median is therefore dominated by
@@ -2277,8 +2309,8 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
         if normal_id not in images or inverse_id not in images:
             continue
         difference = np.abs(
-            to_decoder_u8(to_grayscale(cv2, images[normal_id])).astype(np.float32)
-            - to_decoder_u8(to_grayscale(cv2, images[inverse_id])).astype(np.float32)
+            to_decoder_u8(to_grayscale(cv2, images[normal_id]), bits).astype(np.float32)
+            - to_decoder_u8(to_grayscale(cv2, images[inverse_id]), bits).astype(np.float32)
         )
         valid = difference >= gate.white_black_min_contrast_u8
         full_frame_valid_ratio = float(np.mean(valid))
@@ -2298,7 +2330,10 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
             failures.append(f"Gray pair {normal_id:03d}/{inverse_id:03d} valid={valid_ratio:.3f}")
     sine_ids = [pattern_id for pattern_id in range(10, 14) if pattern_id in images]
     if len(sine_ids) == 4:
-        sine_stack = np.stack([to_decoder_u8(to_grayscale(cv2, images[pattern_id])) for pattern_id in sine_ids], axis=0)
+        sine_stack = np.stack(
+            [to_decoder_u8(to_grayscale(cv2, images[pattern_id]), bits) for pattern_id in sine_ids],
+            axis=0,
+        )
         modulation = sine_stack.max(axis=0).astype(np.float32) - sine_stack.min(axis=0).astype(np.float32)
         valid = modulation >= gate.sine_min_modulation_u8
         full_frame_valid_ratio = float(np.mean(valid))
@@ -2324,13 +2359,18 @@ def assess_fpp_quality(cv2, images: dict[int, Any], hdr: HdrConfig, gate: Qualit
     return result
 
 
-def write_quality_histogram(cv2, images: dict[int, Any], output_path: Path) -> None:
+def write_quality_histogram(
+    cv2, images: dict[int, Any], output_path: Path, sample_bit_depth: int | None = None
+) -> None:
     import numpy as np  # type: ignore
 
     canvas = np.full((300, 512, 3), 255, dtype=np.uint8)
     colors = ((0, 0, 255), (0, 128, 0), (255, 0, 0), (0, 128, 128))
     for index, pattern_id in enumerate(sorted(images)[:4]):
-        histogram = np.bincount(to_decoder_u8(to_grayscale(cv2, images[pattern_id])).ravel(), minlength=256)
+        histogram = np.bincount(
+            to_decoder_u8(to_grayscale(cv2, images[pattern_id]), sample_bit_depth).ravel(),
+            minlength=256,
+        )
         peak = max(1, int(histogram.max()))
         points = np.array([[value * 2, 280 - int(histogram[value] * 240 / peak)] for value in range(256)], dtype=np.int32)
         cv2.polylines(canvas, [points], False, colors[index], 1)
@@ -2472,7 +2512,9 @@ def run_capture_quality_gate(args: argparse.Namespace, patterns: list[PatternSpe
                 "status": "passed" if report["passed"] else "failed",
             }
         )
-        write_quality_histogram(cv2, merged_images, output_dir / "blue_channel_histograms.png")
+        write_quality_histogram(
+            cv2, merged_images, output_dir / "blue_channel_histograms.png", hdr.sample_bit_depth
+        )
         (output_dir / "quality_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         if report["passed"]:
             print(f"[quality] preflight passed: {output_dir}", flush=True)
@@ -3138,7 +3180,9 @@ def run_scan(args: argparse.Namespace) -> int:
             }
             quality = assess_fpp_quality(cv2, final_images, hdr, capture_config.quality_gate)
             quality.update({"mode": "final_scan", "angle_deg": angle, "created_at": datetime.now().isoformat(timespec="seconds")})
-            write_quality_histogram(cv2, final_images, angle_dir / "blue_channel_histograms.png")
+            write_quality_histogram(
+                cv2, final_images, angle_dir / "blue_channel_histograms.png", hdr.sample_bit_depth
+            )
             (angle_dir / "quality_report.json").write_text(json.dumps(quality, indent=2), encoding="utf-8")
             final_quality_reports[str(angle)] = quality
             print(f"[quality] final angle={angle:03d} passed={quality['passed']}", flush=True)
@@ -3547,7 +3591,14 @@ def parse_args() -> argparse.Namespace:
         "--trigger-mode",
         choices=("off", "freerun", "free_run", "software", "edge_rising", "rising", "edge_falling", "falling"),
     )
-    parser.add_argument("--image-format", choices=("mono8", "mono16", "rgb24"))
+    parser.add_argument(
+        "--image-format",
+        choices=("mono8", "mono12", "mono16", "rgb24"),
+        help=(
+            "mono12 captures XIMEA 12-bit samples and saves them unchanged (0..4095) "
+            "in 16-bit PNGs; decode them with input bit depth 12."
+        ),
+    )
     parser.add_argument("--camera-timeout-ms", type=int)
     parser.add_argument("--quality-gate", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--save-format", default=".png", type=normalize_suffix)

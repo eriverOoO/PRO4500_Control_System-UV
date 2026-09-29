@@ -258,6 +258,7 @@ class XimeaUvCamera(CameraInterface):
     XI_MONO8 = 0
     XI_MONO16 = 1
     XI_RGB24 = 2
+    XI_BPP_12 = 12
     XI_TRG_OFF = 0
     XI_TRG_EDGE_RISING = 1
     XI_TRG_EDGE_FALLING = 2
@@ -269,6 +270,8 @@ class XimeaUvCamera(CameraInterface):
     IMAGE_FORMATS = {
         "mono8": XI_MONO8,
         "mono16": XI_MONO16,
+        # 12-bit samples delivered right-aligned (0..4095) in a 16-bit word.
+        "mono12": XI_MONO16,
         "rgb24": XI_RGB24,
     }
 
@@ -394,13 +397,21 @@ class XimeaUvCamera(CameraInterface):
         fmt = self.IMAGE_FORMATS.get(self.settings.image_format)
         if fmt is None:
             raise CameraError(
-                f"Unsupported XIMEA image_format '{self.settings.image_format}'. Use mono8, mono16, or rgb24."
+                f"Unsupported XIMEA image_format '{self.settings.image_format}'. Use mono8, mono12, mono16, or rgb24."
             )
 
         self._check(
             self._lib.xiSetParamInt(self._handle, b"imgdataformat", int(fmt)),
             "xiSetParamInt(imgdataformat)",
         )
+        if self.settings.image_format == "mono12":
+            # Without these the sensor keeps its default depth and the 16-bit
+            # frames would silently carry fewer significant bits.
+            for name in (b"sensor_bit_depth", b"output_bit_depth"):
+                self._check(
+                    self._lib.xiSetParamInt(self._handle, name, self.XI_BPP_12),
+                    f"xiSetParamInt({name.decode()}=12)",
+                )
         if self.settings.width > 0:
             self._try_set_int("width", self.settings.width)
         if self.settings.height > 0:
@@ -434,7 +445,7 @@ class XimeaUvCamera(CameraInterface):
         padding = max(0, int(image.padding_x))
         fmt = self.settings.image_format
 
-        if fmt == "mono16":
+        if fmt in ("mono16", "mono12"):
             dtype = np.uint16
             channels = 1
             bytes_per_pixel = 2
@@ -461,6 +472,10 @@ class XimeaUvCamera(CameraInterface):
         active = rows[:, : width * channels * bytes_per_pixel]
         if dtype == np.uint16:
             array = active.reshape(height, width, bytes_per_pixel).copy().view(np.uint16).reshape(height, width)
+            if fmt == "mono12" and array.size and int(array.max()) > 4095:
+                raise CameraError(
+                    f"mono12 frame has values up to {int(array.max())}; expected right-aligned 12-bit data (0..4095)."
+                )
         elif channels == 3:
             rgb = active.reshape(height, width, 3).copy()
             array = rgb[:, :, ::-1]

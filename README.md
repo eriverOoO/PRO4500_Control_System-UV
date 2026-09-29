@@ -417,8 +417,17 @@ captures/<scan_id>/
 
 ## 참고 사항
 
-- UV 기본값으로는 `mono8`을 권장합니다. 더 높은 bit depth가 필요하고 후속
-  도구가 16-bit 이미지를 처리할 수 있다면 `mono16`을 사용하세요.
+- UV 기본값은 `mono8`입니다. 12비트로 촬영하려면 `mono12`를 사용하세요
+  (제어 패널의 image format 칸에 `mono12` 입력, 또는 `--image-format mono12`).
+  - XIMEA를 Mono16 + sensor/output bit depth 12비트로 설정하고, 카메라 값
+    0~4095(오른쪽 정렬)를 바꾸지 않고 16비트 PNG로 저장합니다. 이때
+    `single_exposure.output_bit_depth`는 무시됩니다.
+  - 프레임 가드, 품질 검사, 포화/암부 판정은 4095를 최대값으로 보고 8비트와
+    같은 기준(0~255 환산)으로 동작합니다.
+  - 디코더(Non-planar_calc)에서는 입력 비트 심도를 `12`로 지정해야 합니다
+    (GUI `입력 비트 심도`, CLI `--input-bit-depth 12`).
+  - `mono16`은 0~65535 전체 범위 데이터로 취급하므로 12비트 카메라 출력에는
+    쓰지 마세요.
 - `trigger_mode`는 `off`, `software`, `edge_rising`, `edge_falling`을
   지원합니다.
 - FPS 제어는 xiAPI를 통해 요청됩니다. 일부 XIMEA 모델은 노출, ROI, 대역폭,
