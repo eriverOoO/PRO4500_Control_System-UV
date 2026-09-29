@@ -1,0 +1,99 @@
+{
+  "calibration_id": "phase_linear_spatial_2p95_5p03_7p96mm_trial",
+  "phase_axis": "y",
+  "reference_phase_by_physical_view": {
+    "0": "D:\\decoded\\flat_reference\\reference_phase_0.npy",
+    "180": "D:\\decoded\\flat_reference\\reference_phase_180.npy"
+  },
+  "baseline_phase_per_mm_by_physical_view": {
+    "0": 5.882307709,
+    "180": 5.83624784
+  },
+  "settings": {
+    "polynomial_degree": 2,
+    "minimum_height_levels_per_pixel": 2,
+    "maximum_polynomial_fit_points": 300000,
+    "phase_fold_bins": 36
+  },
+  "fit": [
+    {
+      "name": "2p95mm_repeat_1",
+      "height_mm": 2.95,
+      "processed_dir": "D:\\decoded\\scan_2p95_repeat_1",
+      "views": {
+        "0": {
+          "subdir": "views/deg_0",
+          "roi_xyxy": [600, 350, 1050, 750]
+        },
+        "180": {
+          "subdir": "views/deg_180",
+          "roi_xyxy": [650, 350, 1100, 750]
+        }
+      }
+    },
+    {
+      "name": "5p03mm_repeat_1",
+      "height_mm": 5.03,
+      "processed_dir": "D:\\decoded\\scan_5p03_repeat_1",
+      "views": {
+        "0": {
+          "subdir": "views/deg_180",
+          "roi_xyxy": [600, 350, 1050, 750]
+        },
+        "180": {
+          "subdir": "views/deg_0",
+          "roi_xyxy": [650, 350, 1100, 750]
+        }
+      }
+    },
+    {
+      "name": "7p96mm_repeat_1",
+      "height_mm": 7.96,
+      "processed_dir": "D:\\decoded\\scan_7p96_repeat_1",
+      "views": {
+        "0": {
+          "subdir": "views/deg_0",
+          "surface_mask": "masks\\block_top_mask.png",
+          "roi_xyxy": [600, 350, 1050, 750]
+        },
+        "180": {
+          "subdir": "views/deg_180",
+          "surface_mask": "masks\\block_top_mask.png",
+          "roi_xyxy": [650, 350, 1100, 750]
+        }
+      }
+    }
+  ],
+  "holdout": [
+    {
+      "name": "2p07mm_holdout_1",
+      "height_mm": 2.07,
+      "processed_dir": "D:\\decoded\\holdout_2p07_repeat_1",
+      "views": {
+        "0": {
+          "subdir": "views/deg_0",
+          "roi_xyxy": [500, 300, 950, 700]
+        },
+        "180": {
+          "subdir": "views/deg_180",
+          "roi_xyxy": [700, 350, 1150, 750]
+        }
+      }
+    },
+    {
+      "name": "6p10mm_holdout_1",
+      "height_mm": 6.10,
+      "processed_dir": "D:\\decoded\\holdout_6p10_repeat_1",
+      "views": {
+        "0": {
+          "subdir": "views/deg_180",
+          "roi_xyxy": [500, 300, 950, 700]
+        },
+        "180": {
+          "subdir": "views/deg_0",
+          "roi_xyxy": [700, 350, 1150, 750]
+        }
+      }
+    }
+  ]
+}

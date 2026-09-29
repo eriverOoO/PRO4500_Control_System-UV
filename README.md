@@ -60,6 +60,11 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
   블록으로 만든 방향별 선형 위상 높이 보정 및 휴대용 기준면.
 - `PHASE_LINEAR_VALIDATION_HANDOFF.md`: 다른 PC에서 2 mm/6 mm 블록을 독립
   검증할 때 Codex와 작업자가 따라야 할 자동 탐색·방향 판정·디코딩 절차.
+- `PHASE_LINEAR_SPATIAL_EXPERIMENT_KO.md`: 이 PC에서 촬영하지 않고,
+  계산 PC의 기존 디코드 배열로 픽셀/공간 기울기 보정과 12 px 주기
+  오차를 독립 hold-out 검증하는 절차.
+- `PHASE_LINEAR_SPATIAL_REMOTE_PROMPT_KO.md`: 촬영·계산 PC의 Codex에
+  그대로 전달할 수 있는 실행 프롬프트.
 
 중앙 패턴 폴더를 다시 생성하려면 다음 명령을 실행합니다.
 
