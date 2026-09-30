@@ -47,6 +47,8 @@ XIMEA UV 카메라 연동과 스캔 워크플로 코드는 이 작업 공간에 
   `MockCamera` 구현.
 - `camera_config.json`: 카메라 설정 파일. 카메라 값을 코드에 직접 넣지 말고
   이 파일을 수정하세요.
+- `run_standalone_thermal_drift.bat` / `standalone_thermal_drift/`: 기존 스캔과 독립적으로
+  White 1장과 4-step sine 4장만 시간별로 촬영하는 냉간 시작 열 드리프트 앱.
 - `build_native_control_panel.bat`: `StructuredLightControlPanel.exe` 빌드.
 - `prepare_pc_python_env.ps1`: `.venv-pc` 생성 및 Python 패키지 설치.
 - `build.bat` / `PRO4500.cpp`: 기존의 간단한 PRO4500 투사/LED 유틸리티.

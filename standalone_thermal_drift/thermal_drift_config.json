@@ -1,0 +1,55 @@
+{
+  "projector": {
+    "monitor_index": 1
+  },
+  "patterns": {
+    "directory": "../generated_patterns1",
+    "files": {
+      "white": "00_White.bmp",
+      "sine_000": "10_Sine_000.bmp",
+      "sine_090": "11_Sine_090.bmp",
+      "sine_180": "12_Sine_180.bmp",
+      "sine_270": "13_Sine_270.bmp"
+    }
+  },
+  "camera": {
+    "provider": "ximea",
+    "ximea": {
+      "device_index": 0,
+      "dll_path": "",
+      "exposure_us": 15000,
+      "gain_db": 0.0,
+      "fps": 10.0,
+      "trigger_mode": "software",
+      "image_format": "mono8",
+      "timeout_ms": 15000,
+      "width": 0,
+      "height": 0
+    },
+    "mock": {
+      "width": 1280,
+      "height": 720,
+      "fps": 10.0,
+      "sample_image": ""
+    }
+  },
+  "capture": {
+    "settle_ms": 1000,
+    "flush_frames_after_pattern": 0
+  },
+  "schedule": {
+    "total_duration_minutes": 90,
+    "initial_duration_minutes": 10,
+    "initial_interval_seconds": 60,
+    "regular_interval_seconds": 180
+  },
+  "aruco": {
+    "enabled": true,
+    "dictionary": "DICT_4X4_50",
+    "marker_ids": [0, 1, 2, 3]
+  },
+  "analysis": {
+    "minimum_modulation": 5.0,
+    "saturation_value": 250.0
+  }
+}
